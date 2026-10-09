@@ -25,6 +25,9 @@ coroutines = "1.10.2"
 mlkitGenai = "1.0.0-beta4"
 litertlm = "0.16.1"
 
+# ---- 图片加载 ----
+coil = "3.6.3"
+
 # ---- 测试 ----
 junit = "4.13.2"
 
@@ -66,6 +69,9 @@ kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-cor
 # 测试
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 kotlin-test = { group = "org.jetbrains.kotlin", name = "kotlin-test", version.ref = "kotlin" }
+
+coil-compose = { group = "io.coil-kt.coil3", name = "coil-compose", version.ref = "coil" }
+coil-network-okhttp = { group = "io.coil-kt.coil3", name = "coil-network-okhttp", version.ref = "coil" }
 
 # 端侧 AI：Gemini Nano（ML Kit GenAI / AICore）
 mlkit-genai-prompt = { group = "com.google.mlkit", name = "genai-prompt", version.ref = "mlkitGenai" }

@@ -181,6 +181,65 @@ class NovelContextStore(private val index: VectorIndex = VectorIndex()) {
         )
     }
 
+    // ------------------------------------------------------------------
+    // 记忆层（供 UI 可视化展示）
+    // ------------------------------------------------------------------
+
+    /** 记忆库总览。 */
+    fun stats(projectId: String): MemoryStats {
+        val all = index.snapshot().filter { it.metadata["projectId"] == projectId }
+        val byKind = all.groupBy { it.kind }
+            .map { (kind, list) ->
+                KindStat(kind, list.size, list.sumOf { it.textLength })
+            }
+            .sortedByDescending { it.entries }
+        return MemoryStats(
+            totalEntries = all.size,
+            totalChars = all.sumOf { it.textLength },
+            byKind = byKind,
+            indexSize = index.indexSize(),
+        )
+    }
+
+    /** 浏览某一类记忆（分页，避免大作品一次性全量）。 */
+    fun browse(projectId: String, kind: String? = null, offset: Int = 0, limit: Int = 60): List<IndexEntry> {
+        val filtered = index.snapshot()
+            .filter { it.metadata["projectId"] == projectId }
+            .filter { kind == null || it.kind == kind }
+        return filtered.drop(offset).take(limit)
+    }
+
+    /**
+     * 检索预览：模拟一次写作前的召回，但**不调用任何模型**。
+     * 让作者能亲眼看到「AI 到底读到了什么」——这是建立信任的关键。
+     */
+    fun preview(
+        projectId: String,
+        query: String,
+        recentChapterTexts: List<String> = emptyList(),
+        maxChars: Int = 3600,
+    ): MemoryPreview {
+        val ctx = buildWritingContext(projectId, query, recentChapterTexts, maxChars)
+
+        // 同时给出带分数的原始命中，便于排查"为什么没召回某条设定"
+        // 注意：filter 不是 search 的最后一个参数，必须用具名实参传入
+        val scored = index.search(query, topK = 12, filter = { it["projectId"] == projectId })
+        return MemoryPreview(
+            query = query,
+            promptBlock = ctx.promptBlock,
+            hits = scored.map {
+                MemoryHit(
+                    kind = it.metadata["kind"] ?: "其他",
+                    source = it.metadata["source"] ?: "",
+                    score = it.score,
+                    preview = it.text.take(140).replace('\n', ' '),
+                )
+            },
+            charCount = ctx.promptBlock.length,
+        )
+    }
+
+    /** 检索命中的一条（带相关性分数）。 */
     private fun meta(projectId: String, kind: String, source: String) =
         mapOf("projectId" to projectId, "kind" to kind, "source" to source)
 
@@ -210,6 +269,33 @@ class NovelContextStore(private val index: VectorIndex = VectorIndex()) {
         if (buf.isNotBlank()) out.add(buf.toString())
         return out
     }
+}
+
+data class MemoryStats(
+    val totalEntries: Int,
+    val totalChars: Int,
+    val byKind: List<KindStat>,
+    val indexSize: IndexSize,
+) {
+    val isEmpty: Boolean get() = totalEntries == 0
+}
+
+data class MemoryHit(
+    val kind: String,
+    val source: String,
+    val score: Float,
+    val preview: String,
+) {
+    val percent: Int get() = (score * 100).toInt().coerceIn(0, 100)
+}
+
+data class MemoryPreview(
+    val query: String,
+    val promptBlock: String,
+    val hits: List<MemoryHit>,
+    val charCount: Int,
+) {
+    val isEmpty: Boolean get() = promptBlock.isBlank()
 }
 
 data class WritingContext(

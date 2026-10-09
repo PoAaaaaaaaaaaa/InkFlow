@@ -36,6 +36,12 @@ data class ProjectEntity(
     val logline: String = "",
     val premise: String = "",
     val targetWords: Long = 1_000_000L,
+    /** 封面图本地路径（应用私有目录） */
+    val coverPath: String = "",
+    val narrativePerson: String = "第三人称",
+    val tone: String = "",
+    val audience: String = "通用",
+    val archived: Boolean = false,
     val createdAt: Long = 0L,
     val updatedAt: Long = 0L,
     /** 文风 DNA 的序列化快照（JSON），避免每次分析全本 */
@@ -195,12 +201,17 @@ class Converters {
 // ----------------------------------------------------------------------
 
 fun ProjectEntity.toDomain() = Project(
-    id, title, author, genre, logline, premise, targetWords, createdAt, updatedAt,
+    id = id, title = title, author = author, genre = genre, logline = logline,
+    premise = premise, targetWords = targetWords, coverPath = coverPath,
+    narrativePerson = narrativePerson, tone = tone, audience = audience,
+    archived = archived, createdAt = createdAt, updatedAt = updatedAt,
 )
 
 fun Project.toEntity(styleJson: String? = null, recap: String = "") = ProjectEntity(
     id = id, title = title, author = author, genre = genre, logline = logline,
-    premise = premise, targetWords = targetWords, createdAt = createdAt, updatedAt = updatedAt,
+    premise = premise, targetWords = targetWords, coverPath = coverPath,
+    narrativePerson = narrativePerson, tone = tone, audience = audience,
+    archived = archived, createdAt = createdAt, updatedAt = updatedAt,
     styleDnaJson = styleJson, globalRecap = recap,
 )
 
@@ -388,8 +399,8 @@ interface ChapterVersionDao {
         CharacterEntity::class, WorldSettingEntity::class, ForeshadowEntity::class,
         ChapterVersionEntity::class,
     ],
-    version = 1,
-    exportSchema = false,
+    version = 2,
+    exportSchema = true,
 )
 @TypeConverters(Converters::class)
 abstract class InkFlowDatabase : RoomDatabase() {

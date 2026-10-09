@@ -11,6 +11,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.inkflow.app.ui.MemoryScreen
 import com.inkflow.app.ui.NovelListScreen
 import com.inkflow.app.ui.SettingsScreen
 import com.inkflow.app.ui.WriterScreen
@@ -45,7 +46,7 @@ private fun InkFlowNavHost(app: InkFlowApp) {
                     app.appScope.let { }
                     navController.navigate(Routes.writer(projectId))
                 },
-                onOpenSettings = { navController.navigate(Routes.SETTINGS) },
+                onOpenSettings = { navController.navigate(Routes.settings()) },
             )
         }
 
@@ -69,14 +70,60 @@ private fun InkFlowNavHost(app: InkFlowApp) {
                 chapterId = chapterId,
                 repo = app.repository,
                 onBack = { navController.popBackStack() },
-                onOpenSettings = { navController.navigate(Routes.SETTINGS) },
+                onOpenSettings = {
+                    navController.navigate(Routes.settings(projectId, vm.state.value.projectTitle))
+                },
+                onOpenMemory = {
+                    navController.navigate(Routes.memory(projectId, vm.state.value.projectTitle))
+                },
             )
         }
 
-        composable(Routes.SETTINGS) {
+        composable(
+            route = Routes.MEMORY,
+            arguments = listOf(
+                navArgument("projectId") { type = NavType.StringType },
+                navArgument("title") {
+                    type = NavType.StringType
+                    defaultValue = ""
+                },
+            ),
+        ) { entry ->
+            val projectId = entry.arguments?.getString("projectId").orEmpty()
+            val title = runCatching {
+                java.net.URLDecoder.decode(entry.arguments?.getString("title").orEmpty(), "UTF-8")
+            }.getOrDefault("")
+            MemoryScreen(
+                app = app,
+                projectId = projectId,
+                projectTitle = title,
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        composable(
+            route = Routes.SETTINGS,
+            arguments = listOf(
+                navArgument("projectId") {
+                    type = NavType.StringType
+                    defaultValue = ""
+                },
+                navArgument("projectTitle") {
+                    type = NavType.StringType
+                    defaultValue = ""
+                },
+            ),
+        ) { entry ->
+            val pid = entry.arguments?.getString("projectId").orEmpty()
+            val pTitle = runCatching {
+                java.net.URLDecoder.decode(entry.arguments?.getString("projectTitle").orEmpty(), "UTF-8")
+            }.getOrDefault("")
             SettingsScreen(
                 app = app,
                 onBack = { navController.popBackStack() },
+                onOpenMemory = if (pid.isNotBlank()) {
+                    { navController.navigate(Routes.memory(pid, pTitle)) }
+                } else null,
             )
         }
     }
@@ -84,9 +131,16 @@ private fun InkFlowNavHost(app: InkFlowApp) {
 
 object Routes {
     const val LIBRARY = "library"
-    const val SETTINGS = "settings"
+    const val SETTINGS = "settings?projectId={projectId}&projectTitle={projectTitle}"
+    const val MEMORY = "memory/{projectId}?title={title}"
     const val WRITER = "writer/{projectId}?chapterId={chapterId}"
 
     fun writer(projectId: String, chapterId: String? = null): String =
         "writer/$projectId?chapterId=${chapterId.orEmpty()}"
+
+    fun memory(projectId: String, title: String): String =
+        "memory/$projectId?title=${java.net.URLEncoder.encode(title, "UTF-8")}"
+
+    fun settings(projectId: String = "", projectTitle: String = ""): String =
+        "settings?projectId=$projectId&projectTitle=${java.net.URLEncoder.encode(projectTitle, "UTF-8")}"
 }

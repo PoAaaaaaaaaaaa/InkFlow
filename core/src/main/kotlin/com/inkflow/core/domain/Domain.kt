@@ -17,6 +17,16 @@ data class Project(
     val logline: String = "",               // 一句话故事
     val premise: String = "",               // 核心设定/梗概
     val targetWords: Long = 1_000_000L,     // 目标字数
+    /** 封面图的本地文件路径（应用私有目录），空表示未设置 */
+    val coverPath: String = "",
+    /** 写作视角，影响所有 Agent 的生成语气 */
+    val narrativePerson: String = "第三人称",
+    /** 基调，如「热血」「悬疑」「治愈」 */
+    val tone: String = "",
+    /** 目标读者，如「男频」「女频」「通用」 */
+    val audience: String = "通用",
+    /** 是否归档（书架分区展示） */
+    val archived: Boolean = false,
     val createdAt: Long = 0L,
     val updatedAt: Long = 0L,
 ) {

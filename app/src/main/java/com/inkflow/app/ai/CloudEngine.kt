@@ -193,10 +193,144 @@ class CloudEngine(
         }.recoverCatching { t -> throw AiEngineException(t.message ?: "未知错误", t) }
     }
 
+    /**
+     * 拉取服务端可用模型列表（GET {base}/models，OpenAI 兼容协议的标配端点）。
+     *
+     * 兼容性处理：
+     *  - 部分服务（如某些 One-API 部署）返回 {"data":[{...}]}，也有返回裸数组的；
+     *  - 有的只返回 {"object":"list","data":[]}，即"能连上但拿不到列表"；
+     *  - Ollama 的 /v1/models 与原生 /api/tags 字段结构不同，这里统一兼容。
+     *
+     * @return 成功时返回模型 id 列表（已去重排序）；失败抛出带原因的诊断信息。
+     */
+    suspend fun fetchModels(): Result<List<String>> = withContext(Dispatchers.IO) {
+        runCatching {
+            if (config.baseUrl.isBlank()) throw AiEngineException("请先填写接口地址")
+
+            val url = config.modelsEndpoint()
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("Authorization", "Bearer ${config.apiKey}")
+                .addHeader("Accept", "application/json")
+                .get()
+                .build()
+
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) {
+                    throw AiEngineException(
+                        when (resp.code) {
+                            401, 403 -> "鉴权失败（${resp.code}）：API Key 可能不正确或没有权限"
+                            404 -> "该地址没有 /models 端点（404）。请确认地址是否为 OpenAI 兼容接口，" +
+                                "例如应以 /v1 结尾；若服务不支持列举模型，可手动填写模型名"
+                            else -> "服务返回 ${resp.code}：${body.take(200)}"
+                        }
+                    )
+                }
+                parseModelIds(body)
+            }
+        }
+    }
+
+    /** 解析模型列表响应，兼容多种常见结构。 */
+    internal fun parseModelIds(body: String): List<String> {
+        if (body.isBlank()) throw AiEngineException("服务返回了空响应")
+
+        val element = runCatching { json.parseToJsonElement(body) }.getOrElse {
+            throw AiEngineException("返回内容不是合法 JSON，可能不是 OpenAI 兼容接口")
+        }
+
+        val ids = LinkedHashSet<String>()
+
+        fun collectFromArray(arr: kotlinx.serialization.json.JsonArray) {
+            arr.forEach { item ->
+                // 结构 A: [{"id":"gpt-4o"}, ...]
+                val obj = item as? JsonObject
+                if (obj != null) {
+                    val id = obj["id"]?.jsonPrimitive?.contentOrNullSafe()
+                        ?: obj["name"]?.jsonPrimitive?.contentOrNullSafe()
+                        ?: obj["model"]?.jsonPrimitive?.contentOrNullSafe()
+                    if (!id.isNullOrBlank()) ids.add(id)
+                } else {
+                    // 结构 B: ["gpt-4o", ...]
+                    item.jsonPrimitive.contentOrNullSafe()?.takeIf { it.isNotBlank() }?.let { ids.add(it) }
+                }
+            }
+        }
+
+        when (element) {
+            is JsonObject -> {
+                // 结构 C: {"data":[...]} 或 {"models":[...]}
+                val arr = element["data"] as? kotlinx.serialization.json.JsonArray
+                    ?: element["models"] as? kotlinx.serialization.json.JsonArray
+                if (arr != null) collectFromArray(arr)
+                else throw AiEngineException("响应中没有找到模型列表字段（data / models）")
+            }
+            is kotlinx.serialization.json.JsonArray -> collectFromArray(element)
+            else -> throw AiEngineException("无法识别的响应结构")
+        }
+
+        if (ids.isEmpty()) {
+            throw AiEngineException(
+                "连接成功，但服务未返回任何模型。请手动填写模型名" +
+                    "（部分服务需要先在后台开通模型权限）"
+            )
+        }
+        return ids.sorted()
+    }
+
+    /**
+     * 一次性诊断：先列模型，再试一次真实对话。
+     * 设置页用它给出「具体哪一步失败」的提示，而不是笼统的"连接失败"。
+     */
+    suspend fun diagnose(): DiagnosticResult = withContext(Dispatchers.IO) {
+        val models = fetchModels()
+        if (models.isFailure) {
+            val err = models.exceptionOrNull()
+            return@withContext DiagnosticResult(
+                modelsOk = false,
+                chatOk = false,
+                models = emptyList(),
+                modelsError = err?.message ?: "未知错误",
+                chatError = "未执行（模型列表获取失败）",
+            )
+        }
+        val list = models.getOrDefault(emptyList())
+        val chat = testConnection()
+        DiagnosticResult(
+            modelsOk = true,
+            chatOk = chat.isSuccess,
+            models = list,
+            modelsError = null,
+            chatError = chat.exceptionOrNull()?.message,
+        )
+    }
+
     private companion object {
         val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
     }
 }
+
+/** 诊断结果：分别说明「列模型」与「真实对话」两步的成败。 */
+data class DiagnosticResult(
+    val modelsOk: Boolean,
+    val chatOk: Boolean,
+    val models: List<String>,
+    val modelsError: String? = null,
+    val chatError: String? = null,
+) {
+    val allOk: Boolean get() = modelsOk && chatOk
+
+    /** 给用户看的一句话结论。 */
+    fun summary(): String = when {
+        allOk -> "连接正常，可用模型 ${models.size} 个"
+        modelsOk && !chatOk -> "能列出模型，但对话失败：${chatError.orEmpty().take(120)}"
+        else -> modelsError.orEmpty().take(160)
+    }
+}
+
+private fun kotlinx.serialization.json.JsonPrimitive.contentOrNullSafe(): String? =
+    runCatching { content }.getOrNull()
 
 /**
  * 云端模型配置。存在 DataStore 中，API Key 不进入日志、不上传。
@@ -212,10 +346,57 @@ data class CloudConfig(
 ) {
     val isUsable: Boolean get() = enabled && apiKey.isNotBlank() && baseUrl.isNotBlank() && model.isNotBlank()
 
+    /** 规范化 base：补协议头、去掉尾部斜杠。 */
+    private fun normalizedBase(): String {
+        var base = baseUrl.trim().removeSuffix("/")
+        if (base.isEmpty()) return base
+        if (!base.startsWith("http://") && !base.startsWith("https://")) {
+            // 内网地址用 http 更常见（Ollama/内网网关），公网域名用 https
+            base = if (looksLikePrivateHost(base)) "http://$base" else "https://$base"
+        }
+        return base
+    }
+
+    /** 判断是否像内网/本机地址，用于选择默认协议并给出安全提示。 */
+    fun looksLikePrivateHost(raw: String = baseUrl): Boolean {
+        val host = raw.trim()
+            .removePrefix("http://").removePrefix("https://")
+            .substringBefore('/').substringBefore(':')
+            .lowercase()
+        if (host.isEmpty()) return false
+        if (host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "10.0.2.2") return true
+        if (host.endsWith(".local") || host.endsWith(".lan") || host.endsWith(".internal")) return true
+        val parts = host.split('.')
+        if (parts.size == 4 && parts.all { it.toIntOrNull() != null }) {
+            val a = parts[0].toInt()
+            val b = parts[1].toInt()
+            return a == 10 ||
+                (a == 192 && b == 168) ||
+                (a == 172 && b in 16..31)
+        }
+        return false
+    }
+
+    /** 当前配置是否会以明文发送（用于 UI 如实告知用户）。 */
+    fun isCleartext(): Boolean = normalizedBase().startsWith("http://")
+
     /** 容忍用户只填到 `/v1`，自动补全 chat/completions 路径。 */
     fun endpoint(): String {
-        var base = baseUrl.trim().removeSuffix("/")
-        if (!base.startsWith("http")) base = "https://$base"
-        return if (base.endsWith("/chat/completions")) base else "$base/chat/completions"
+        val base = normalizedBase()
+        if (base.isEmpty()) return base
+        if (base.endsWith("/chat/completions")) return base
+        // 已带版本段或已是完整路径时，直接接 chat/completions
+        return "$base/chat/completions"
+    }
+
+    /** 模型列表端点：把 chat/completions 换成 models。 */
+    fun modelsEndpoint(): String {
+        val base = normalizedBase()
+        if (base.isEmpty()) return base
+        return when {
+            base.endsWith("/chat/completions") -> base.removeSuffix("/chat/completions") + "/models"
+            base.endsWith("/models") -> base
+            else -> "$base/models"
+        }
     }
 }

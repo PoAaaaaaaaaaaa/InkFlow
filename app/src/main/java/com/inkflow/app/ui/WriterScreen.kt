@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
@@ -107,6 +108,7 @@ fun WriterScreen(
     repo: NovelRepository,
     onBack: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenMemory: () -> Unit = {},
 ) {
     val state by viewModel.state.collectAsState()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
@@ -263,6 +265,7 @@ fun WriterScreen(
                         state = state,
                         onIntent = viewModel::onIntent,
                         onContinue = { showContinueDialog = true },
+                        onOpenMemory = onOpenMemory,
                         onClose = { showAiPanel = false },
                     )
                 }
@@ -498,6 +501,7 @@ private fun AiActionPanel(
     state: com.inkflow.app.ui.mvi.WriterUiState,
     onIntent: (WriterIntent) -> Unit,
     onContinue: () -> Unit,
+    onOpenMemory: () -> Unit,
     onClose: () -> Unit,
 ) {
     Card(
@@ -577,6 +581,54 @@ private fun AiActionPanel(
                 }
                 ActionChip("文风蒸馏", Icons.Default.AutoFixHigh, Modifier.weight(1f)) {
                     onIntent(WriterIntent.RebuildStyleDna)
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+            ActionChip("记忆层", Icons.Default.Memory, Modifier.fillMaxWidth(), onClick = onOpenMemory)
+
+            // 上次生成实际注入了什么上下文，让作者可核对
+            if (state.lastContextPreview.isNotBlank()) {
+                Spacer(Modifier.height(8.dp))
+                var expanded by remember { mutableStateOf(false) }
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                    shape = RoundedCornerShape(10.dp),
+                ) {
+                    Column(Modifier.padding(10.dp)) {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { expanded = !expanded },
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                Icons.Default.Memory,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                "上次注入的上下文（${state.lastContextPreview.length} 字）",
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                if (expanded) "收起" else "展开",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                        if (expanded) {
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                state.lastContextPreview.take(1600),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                 }
             }
 

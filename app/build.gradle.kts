@@ -28,8 +28,8 @@ android {
         applicationId = "com.inkflow.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
 
         vectorDrawables.useSupportLibrary = true
         resourceConfigurations += listOf("zh", "en")
@@ -93,6 +93,12 @@ android {
         }
     }
 
+    // 导出 Room schema，用于校验迁移与实体定义是否一致
+    ksp {
+        arg("room.schemaLocation", "$projectDir/schemas")
+        arg("room.generateKotlin", "true")
+    }
+
     lint {
         abortOnError = false
         checkReleaseBuilds = false
@@ -118,6 +124,10 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.documentfile)
+
+    // ---- 封面图加载 ----
+    implementation(libs.coil.compose)
+    implementation(libs.coil.network.okhttp)
 
     // ---- 数据层：Room + DataStore ----
     implementation(libs.room.runtime)

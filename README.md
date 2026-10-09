@@ -368,6 +368,14 @@ echo "sdk.dir=$ANDROID_HOME" > local.properties
 
 ---
 
+## v1.1.0 新增
+
+- **作品管理**：删除（二次确认列出章节数与字数）／归档／封面（相册选图，无需存储权限，自动裁 3:4）
+- **网络**：支持明文 HTTP，可直连局域网 Ollama 与内网推理网关
+- **新建向导**：4 步（基本信息 → 题材受众 → 写作风格 → 规模封面），每步说明影响 AI 什么
+- **记忆层**：把 AI 记住的东西摊开看 —— 索引统计、条目浏览、召回预览（逐字显示将注入的 Prompt）
+- **模型自动获取**：一键拉取 `/v1/models`，支持多结构解析 + 分步连接诊断
+
 ## 快速上手
 
 1. **安装**：从 [Releases](https://github.com/PoAaaaaaaaaaaa/InkFlow/releases) 下载 `app-release.apk`（约 48MB）
@@ -384,10 +392,11 @@ echo "sdk.dir=$ANDROID_HOME" > local.properties
 
 | 验证项 | 结果 |
 |---|---|
-| core 单元测试 | ✅ 55/55 通过（本地 + GitHub Actions 双跑通） |
+| core 单元测试 | ✅ 69/69 通过（本地 + GitHub Actions 双跑通） |
 | Kotlin 编译 + KSP（Room） | ✅ 通过（aarch64 本机） |
 | Debug APK 构建 | ✅ 通过（GitHub Actions） |
 | Release APK 构建（R8 + 资源压缩） | ✅ 通过（GitHub Actions） |
+| Room v1→v2 迁移 | ✅ 已用真实 SQLite 验证：旧数据零丢失，16/16 列与实体 schema 一致 |
 | GitHub Release 自动发布 | ✅ 已发布 [v1.0.0](https://github.com/PoAaaaaaaaaaaa/InkFlow/releases/tag/v1.0.0) |
 
 > 本地（aarch64 Android）无法完成 APK 打包：Android SDK 的 `aapt2` 官方只提供 x86_64 二进制

@@ -61,6 +61,13 @@ class SettingsStore(private val context: Context) {
 
     val lastProjectId: Flow<String?> = context.dataStore.data.map { it[KEY_LAST_PROJECT] }
 
+    /** 上次成功使用的模型名，用于自动回填 */
+    val lastUsedModel: Flow<String> = context.dataStore.data.map { it[KEY_LAST_MODEL] ?: "" }
+
+    suspend fun setLastUsedModel(model: String) {
+        context.dataStore.edit { it[KEY_LAST_MODEL] = model }
+    }
+
     suspend fun saveCloudConfig(config: CloudConfig) {
         context.dataStore.edit { p ->
             p[KEY_CLOUD_BASE] = config.baseUrl
@@ -128,6 +135,7 @@ class SettingsStore(private val context: Context) {
         val KEY_TYPEWRITER = booleanPreferencesKey("typewriter")
 
         val KEY_LAST_PROJECT = stringPreferencesKey("last_project")
+        val KEY_LAST_MODEL = stringPreferencesKey("last_used_model")
     }
 }
 

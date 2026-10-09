@@ -102,6 +102,45 @@ class VectorIndex(
     fun getText(id: String): String? = entries[id]?.text
 
     /**
+     * 全条目快照（仅元数据，不含正文），供「记忆层」界面浏览。
+     * 返回按 kind 分组的条目，避免把十万字正文一次性拉进内存。
+     */
+    fun snapshot(): List<IndexEntry> = entries.values.map { e ->
+        IndexEntry(
+            id = e.id,
+            docId = e.docId,
+            textPreview = e.text.take(160).replace('\n', ' '),
+            textLength = e.text.length,
+            metadata = e.metadata,
+            termCount = e.sparse.size,
+        )
+    }
+
+    /** 按元数据 kind 统计条目数与总字数，用于记忆层概览卡片。 */
+    fun statsByKind(): Map<String, KindStat> {
+        val map = linkedMapOf<String, KindStat>()
+        for (e in entries.values) {
+            val kind = e.metadata["kind"] ?: "其他"
+            val cur = map[kind]
+            if (cur == null) {
+                map[kind] = KindStat(kind, 1, e.text.length)
+            } else {
+                map[kind] = cur.copy(entries = cur.entries + 1, chars = cur.chars + e.text.length)
+            }
+        }
+        return map
+    }
+
+    /** 倒排索引规模，用于展示「检索为什么快」。 */
+    fun indexSize(): IndexSize = IndexSize(
+        entries = entries.size,
+        dimensions = inverted.size,
+        postings = inverted.values.sumOf { it.size },
+        avgTermsPerEntry = if (entries.isEmpty()) 0.0
+        else entries.values.sumOf { it.sparse.size }.toDouble() / entries.size,
+    )
+
+    /**
      * 检索最相关的 k 条。
      *
      * @param filter 元数据过滤，例如只要同一作品的条目，避免跨作品串味
@@ -240,3 +279,29 @@ data class ScoredChunk(
     val score: Float,
     val metadata: Map<String, String>,
 )
+
+/** 记忆层里的一条记忆（元数据视图，不含全文）。 */
+data class IndexEntry(
+    val id: String,
+    val docId: String,
+    val textPreview: String,
+    val textLength: Int,
+    val metadata: Map<String, String>,
+    /** 该条目的特征词数量，可粗略反映信息密度 */
+    val termCount: Int,
+) {
+    val kind: String get() = metadata["kind"] ?: "其他"
+    val source: String get() = metadata["source"] ?: ""
+}
+
+data class KindStat(val kind: String, val entries: Int, val chars: Int)
+
+data class IndexSize(
+    val entries: Int,
+    val dimensions: Int,
+    val postings: Int,
+    val avgTermsPerEntry: Double,
+) {
+    val compressionRatio: Double
+        get() = if (postings == 0) 0.0 else entries.toDouble() / postings
+}

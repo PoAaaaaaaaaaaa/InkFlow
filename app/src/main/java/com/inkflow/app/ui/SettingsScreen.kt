@@ -1,5 +1,6 @@
 package com.inkflow.app.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -7,6 +8,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -22,7 +24,10 @@ import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -39,8 +44,10 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -54,6 +61,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import com.inkflow.app.InkFlowApp
 import com.inkflow.app.ai.CloudConfig
@@ -70,7 +80,11 @@ import kotlinx.coroutines.launch
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(app: InkFlowApp, onBack: () -> Unit) {
+fun SettingsScreen(
+    app: InkFlowApp,
+    onBack: () -> Unit,
+    onOpenMemory: (() -> Unit)? = null,
+) {
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
 
@@ -79,6 +93,11 @@ fun SettingsScreen(app: InkFlowApp, onBack: () -> Unit) {
     val writing by app.settingsStore.writingPrefs.collectAsState(initial = WritingPrefs())
 
     var cloudDraft by remember { mutableStateOf(cloud) }
+    var models by remember { mutableStateOf<List<String>>(emptyList()) }
+    var fetchingModels by remember { mutableStateOf(false) }
+    var modelFetchError by remember { mutableStateOf<String?>(null) }
+    var showModelPicker by remember { mutableStateOf(false) }
+    var diagnoseResult by remember { mutableStateOf<com.inkflow.app.ai.DiagnosticResult?>(null) }
     var status by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
     var testing by remember { mutableStateOf(false) }
     var probing by remember { mutableStateOf(false) }
@@ -110,6 +129,24 @@ fun SettingsScreen(app: InkFlowApp, onBack: () -> Unit) {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
+            // ---------------- 记忆层入口 ----------------
+            if (onOpenMemory != null) {
+                SectionCard("记忆层") {
+                    Text(
+                        "查看 AI 到底记住了什么：索引了多少条记忆、有哪些角色与伏笔、"
+                            + "以及下一章生成时实际会注入哪段上下文。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedButton(onClick = onOpenMemory, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.Memory, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("打开记忆层")
+                    }
+                }
+            }
+
             // ---------------- 引擎状态 ----------------
             SectionCard("端侧 AI 引擎") {
                 Text(
@@ -196,12 +233,51 @@ fun SettingsScreen(app: InkFlowApp, onBack: () -> Unit) {
                     )
                 }
 
+                // ---- 常见服务快速预设 ----
+                Spacer(Modifier.height(6.dp))
+                Text("快速填充", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(4.dp))
+                val presets = listOf(
+                    Triple("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini"),
+                    Triple("DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat"),
+                    Triple("通义千问", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"),
+                    Triple("Ollama(本机)", "http://127.0.0.1:11434/v1", "qwen2.5:7b"),
+                )
+                presets.chunked(2).forEach { row ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(vertical = 2.dp)) {
+                        row.forEach { (name, url, model) ->
+                            FilterChip(
+                                selected = cloudDraft.baseUrl == url,
+                                onClick = {
+                                    cloudDraft = cloudDraft.copy(
+                                        baseUrl = url,
+                                        model = cloudDraft.model.ifBlank { model },
+                                        displayName = name,
+                                    )
+                                },
+                                label = { Text(name, style = MaterialTheme.typography.bodySmall) },
+                            )
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(10.dp))
                 OutlinedTextField(
                     value = cloudDraft.baseUrl,
                     onValueChange = { cloudDraft = cloudDraft.copy(baseUrl = it) },
                     label = { Text("接口地址") },
                     placeholder = { Text("https://api.openai.com/v1") },
                     singleLine = true,
+                    supportingText = {
+                        Text(
+                            if (cloudDraft.isCleartext())
+                                "⚠ 当前使用明文 HTTP 传输，仅建议用于本机或可信内网"
+                            else "留到 /v1 即可，会自动补全路径",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (cloudDraft.isCleartext()) MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    },
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(8.dp))
@@ -209,25 +285,106 @@ fun SettingsScreen(app: InkFlowApp, onBack: () -> Unit) {
                     value = cloudDraft.apiKey,
                     onValueChange = { cloudDraft = cloudDraft.copy(apiKey = it) },
                     label = { Text("API Key") },
+                    placeholder = { Text("sk-...（本地 Ollama 可留空）") },
                     singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                     modifier = Modifier.fillMaxWidth(),
                 )
+
+                // ---- 模型：自动获取 + 手动输入 ----
+                Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("模型", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+                    if (models.isNotEmpty()) {
+                        Text(
+                            "已获取 ${models.size} 个",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            scope.launch {
+                                fetchingModels = true
+                                modelFetchError = null
+                                app.settingsStore.saveCloudConfig(cloudDraft)
+                                app.reloadRouter()
+                                kotlinx.coroutines.delay(250)
+                                val engine = com.inkflow.app.ai.CloudEngine(cloudDraft)
+                                val result = engine.fetchModels()
+                                fetchingModels = false
+                                result.fold(
+                                    onSuccess = { list ->
+                                        models = list
+                                        // 只有一个模型时直接选中，省一步操作
+                                        if (list.size == 1) cloudDraft = cloudDraft.copy(model = list.first())
+                                        snackbar.showSnackbar("已获取 ${list.size} 个可用模型")
+                                    },
+                                    onFailure = { e ->
+                                        models = emptyList()
+                                        modelFetchError = e.message ?: "获取失败"
+                                        snackbar.showSnackbar("获取模型失败：${e.message?.take(60)}")
+                                    },
+                                )
+                            }
+                        },
+                        enabled = !fetchingModels && cloudDraft.baseUrl.isNotBlank(),
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        if (fetchingModels) {
+                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(6.dp))
+                        } else {
+                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                        }
+                        Text(if (models.isEmpty()) "自动获取模型" else "重新获取")
+                    }
+                    OutlinedButton(
+                        onClick = { showModelPicker = true },
+                        enabled = models.isNotEmpty(),
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Icon(Icons.Default.List, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("从列表选择")
+                    }
+                }
+
+                if (modelFetchError != null) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        modelFetchError!!,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = cloudDraft.model,
                     onValueChange = { cloudDraft = cloudDraft.copy(model = it) },
                     label = { Text("模型名") },
-                    placeholder = { Text("gpt-4o-mini / deepseek-chat / qwen-max") },
+                    placeholder = { Text("gpt-4o-mini / deepseek-chat / qwen-plus") },
                     singleLine = true,
+                    supportingText = {
+                        Text("服务不支持列举模型时，可直接手填", style = MaterialTheme.typography.bodySmall)
+                    },
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Spacer(Modifier.height(10.dp))
 
+                Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = {
                             scope.launch {
                                 app.settingsStore.saveCloudConfig(cloudDraft)
+                                app.settingsStore.setLastUsedModel(cloudDraft.model)
                                 app.reloadRouter()
                                 snackbar.showSnackbar("已保存云端配置")
                             }
@@ -238,31 +395,70 @@ fun SettingsScreen(app: InkFlowApp, onBack: () -> Unit) {
                         onClick = {
                             scope.launch {
                                 testing = true
+                                diagnoseResult = null
                                 app.settingsStore.saveCloudConfig(cloudDraft)
                                 app.reloadRouter()
-                                kotlinx.coroutines.delay(300)
-                                val result = runCatching {
-                                    app.router.complete(
-                                        com.inkflow.core.ai.AiRequest(prompt = "回复：正常", maxTokens = 16),
-                                        preferredId = "cloud",
-                                    ).text
-                                }
+                                kotlinx.coroutines.delay(250)
+                                val engine = com.inkflow.app.ai.CloudEngine(cloudDraft)
+                                diagnoseResult = engine.diagnose()
                                 testing = false
-                                snackbar.showSnackbar(
-                                    result.fold(
-                                        { "连接成功：${it.take(40)}" },
-                                        { "连接失败：${it.message?.take(80)}" },
-                                    )
-                                )
                             }
                         },
-                        enabled = !testing && cloudDraft.apiKey.isNotBlank(),
+                        enabled = !testing && cloudDraft.baseUrl.isNotBlank(),
                     ) {
                         if (testing) {
                             CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                             Spacer(Modifier.width(8.dp))
                         }
                         Text("测试连接")
+                    }
+                }
+
+                // ---- 诊断结果：分步告知哪一步失败 ----
+                diagnoseResult?.let { d ->
+                    Spacer(Modifier.height(10.dp))
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (d.allOk) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                            else MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
+                        ),
+                        shape = RoundedCornerShape(10.dp),
+                    ) {
+                        Column(Modifier.padding(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    if (d.allOk) Icons.Default.CheckCircle else Icons.Default.Warning,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = if (d.allOk) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.error,
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    d.summary(),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Medium,
+                                )
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                "① 列举模型：" + if (d.modelsOk) "成功（${d.models.size} 个）" else "失败 — ${d.modelsError.orEmpty().take(100)}",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Text(
+                                "② 实际对话：" + if (d.chatOk) "成功" else "失败 — ${d.chatError.orEmpty().take(100)}",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            if (d.modelsOk && d.models.isNotEmpty()) {
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    "可用模型：" + d.models.take(8).joinToString("、") +
+                                        if (d.models.size > 8) " 等 ${d.models.size} 个" else "",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -378,6 +574,43 @@ fun SettingsScreen(app: InkFlowApp, onBack: () -> Unit) {
 
             Spacer(Modifier.height(40.dp))
         }
+    }
+
+    // 模型列表选择弹窗
+    if (showModelPicker) {
+        AlertDialog(
+            onDismissRequest = { showModelPicker = false },
+            title = { Text("选择模型（${models.size} 个）") },
+            text = {
+                LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                    items(models) { m ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    cloudDraft = cloudDraft.copy(model = m)
+                                    showModelPicker = false
+                                }
+                                .padding(vertical = 10.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(
+                                selected = cloudDraft.model == m,
+                                onClick = {
+                                    cloudDraft = cloudDraft.copy(model = m)
+                                    showModelPicker = false
+                                },
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(m, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showModelPicker = false }) { Text("关闭") }
+            },
+        )
     }
 }
 

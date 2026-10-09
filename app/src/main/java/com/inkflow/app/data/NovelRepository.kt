@@ -53,6 +53,10 @@ class NovelRepository(
         premise: String,
         author: String = "",
         targetWords: Long = 1_000_000L,
+        narrativePerson: String = "第三人称",
+        tone: String = "",
+        audience: String = "通用",
+        coverPath: String = "",
     ): Project = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
         val project = Project(
@@ -63,6 +67,10 @@ class NovelRepository(
             logline = logline,
             premise = premise,
             targetWords = targetWords,
+            coverPath = coverPath,
+            narrativePerson = narrativePerson,
+            tone = tone,
+            audience = audience,
             createdAt = now,
             updatedAt = now,
         )
@@ -86,7 +94,55 @@ class NovelRepository(
         projectDao.saveGlobalRecap(projectId, recap, System.currentTimeMillis())
     }
 
-    suspend fun deleteProject(id: String) = withContext(Dispatchers.IO) { projectDao.delete(id) }
+    /**
+     * 删除作品。Room 的外键 CASCADE 会自动清掉其下所有分卷/章节/角色/设定/伏笔/版本，
+     * 这里额外清理封面文件，避免私有目录里留下孤儿图片。
+     */
+    suspend fun deleteProject(id: String): DeleteResult = withContext(Dispatchers.IO) {
+        val project = projectDao.get(id)
+        val chapterCount = chapterDao.count(id)
+        val wordCount = chapterDao.listByProject(id).sumOf { it.wordCount }
+
+        projectDao.delete(id)
+
+        // 清理封面（仅限应用私有目录内的文件，避免误删用户相册里的原图）
+        project?.coverPath?.takeIf { it.isNotBlank() }?.let { path ->
+            runCatching {
+                val f = java.io.File(path)
+                if (f.exists() && f.absolutePath.contains("cover")) f.delete()
+            }
+        }
+        DeleteResult(chapterCount, wordCount)
+    }
+
+    /** 归档 / 取消归档作品。 */
+    suspend fun setProjectArchived(id: String, archived: Boolean) = withContext(Dispatchers.IO) {
+        val p = projectDao.get(id) ?: return@withContext
+        projectDao.upsert(p.copy(archived = archived, updatedAt = System.currentTimeMillis()))
+    }
+
+    /** 更新封面路径。 */
+    suspend fun updateCover(projectId: String, coverPath: String) = withContext(Dispatchers.IO) {
+        val p = projectDao.get(projectId) ?: return@withContext
+        projectDao.upsert(p.copy(coverPath = coverPath, updatedAt = System.currentTimeMillis()))
+    }
+
+    /** 封面存放目录（应用私有，随卸载清理）。 */
+    fun coverFile(projectId: String, ext: String = "jpg"): java.io.File {
+        val dir = java.io.File(coverDirPath())
+        if (!dir.exists()) dir.mkdirs()
+        return java.io.File(dir, "cover_$projectId.$ext")
+    }
+
+    private fun coverDirPath(): String = coverDir
+
+    /** 由 [com.inkflow.app.InkFlowApp] 在初始化时注入私有目录路径。 */
+    var coverDir: String = ""
+        private set
+
+    fun setCoverDir(path: String) {
+        coverDir = path
+    }
 
     // ---------------- 分卷 ----------------
 
@@ -300,6 +356,100 @@ class NovelRepository(
     }
 
     suspend fun deleteForeshadow(id: String) = withContext(Dispatchers.IO) { foreshadowDao.delete(id) }
+
+    /**
+     * 删除前预览影响范围（章节数 / 字数），供确认弹窗展示。
+     * 不做任何写操作。
+     */
+    suspend fun inspectProject(id: String): DeleteResult = withContext(Dispatchers.IO) {
+        val chapters = chapterDao.listByProject(id)
+        DeleteResult(chapters.size, chapters.sumOf { it.wordCount })
+    }
+
+    /**
+     * 从相册 URI 保存封面到应用私有目录。
+     *
+     * 为什么要「复制一份」而不是直接用 URI：
+     *  - 相册 URI 的读取授权是临时的，重启后可能失效；
+     *  - 用户可能在系统相册里删掉原图，导致封面丢失；
+     *  - 私有目录不需要任何存储权限。
+     *
+     * 同时做下采样，避免把 4000x3000 的原图整张存进来。
+     */
+    suspend fun saveCoverFromUri(
+        context: android.content.Context,
+        projectId: String,
+        uri: android.net.Uri,
+        maxSize: Int = 1080,
+    ): String = withContext(Dispatchers.IO) {
+        val target = coverFile(projectId, "jpg")
+
+        // 第一步：只读图片头部拿尺寸（inJustDecodeBounds 不会真正解码像素）
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri)?.use { stream ->
+            android.graphics.BitmapFactory.decodeStream(stream, null, bounds)
+        } ?: throw java.io.IOException("无法读取所选图片")
+
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+            throw java.io.IOException("所选文件不是有效图片")
+        }
+
+        // 第二步：算下采样比。目标是长边不超过 maxSize 的 2 倍，留出裁剪余量。
+        var sample = 1
+        while (bounds.outWidth / sample > maxSize * 2 || bounds.outHeight / sample > maxSize * 2) {
+            sample *= 2
+        }
+
+        // 第三步：重新打开流做真正的解码（InputStream 只能消费一次，必须重新获取）
+        val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+        val bitmap = context.contentResolver.openInputStream(uri)?.use { stream ->
+            android.graphics.BitmapFactory.decodeStream(stream, null, opts)
+        } ?: throw java.io.IOException("无法解码所选图片")
+
+        val cropped = try {
+            centerCrop(bitmap, 3, 4)
+        } finally {
+            // centerCrop 可能返回原对象（无需裁剪时），所以用 identity 判断
+            if (!bitmap.isRecycled) bitmap.recycle()
+        }
+
+        try {
+            java.io.FileOutputStream(target).use { out ->
+                cropped.compress(android.graphics.Bitmap.CompressFormat.JPEG, 88, out)
+            }
+        } finally {
+            if (!cropped.isRecycled) cropped.recycle()
+        }
+
+        updateCover(projectId, target.absolutePath)
+        target.absolutePath
+    }
+
+    /** 按目标宽高比居中裁剪。 */
+    private fun centerCrop(
+        src: android.graphics.Bitmap,
+        ratioW: Int,
+        ratioH: Int,
+    ): android.graphics.Bitmap {
+        val targetRatio = ratioW.toFloat() / ratioH
+        val srcRatio = src.width.toFloat() / src.height
+        val (cw, ch) = if (srcRatio > targetRatio) {
+            (src.height * targetRatio).toInt() to src.height
+        } else {
+            src.width to (src.width / targetRatio).toInt()
+        }
+        val x = ((src.width - cw) / 2).coerceAtLeast(0)
+        val y = ((src.height - ch) / 2).coerceAtLeast(0)
+        // createBitmap 在参数等于原图尺寸时可能直接返回 src 本身，
+        // 那样调用方 recycle 后会把原图也销毁。这里始终复制一份，语义清晰。
+        return android.graphics.Bitmap.createBitmap(
+            src, x, y, cw.coerceAtMost(src.width - x), ch.coerceAtMost(src.height - y),
+        ).let { result ->
+            if (result === src) src.copy(src.config ?: android.graphics.Bitmap.Config.ARGB_8888, false) else result
+        }
+    }
+
+    data class DeleteResult(val chapters: Int, val words: Int)
 
     companion object {
         fun newId(): String = UUID.randomUUID().toString()

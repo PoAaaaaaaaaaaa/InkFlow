@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  网络安全策略
+
+  【为什么放开明文】
+  墨流允许把 AI 引擎指向**用户自己的**服务：局域网里的 Ollama、
+  内网部署的 One-API / vLLM、公司内网的推理网关。这些地址几乎都是
+  http://192.168.x.x:11434 这样的形式，强制 HTTPS 会让它们完全不可用。
+
+  【为什么不能只放开私有网段】
+  Android 的 network-security-config 只支持按域名匹配（含子域后缀），
+  **不支持 CIDR**。写 "192.168.1.0" 只能匹配这个字面 IP，
+  匹配不到 "192.168.1.100" —— 那样写等于没写，只会造成"配置看着生效、
+  实际仍然被拦"的假象。所以这里选择显式放开明文，并在应用内做如实告知。
+
+  【风险控制】
+  1. API Key 只发送给用户自己填写的地址，不做任何第三方转发；
+  2. 应用内「云端模型」填入 http:// 地址时会显示明文传输提示；
+  3. 默认不联网：云端引擎必须用户手动开启才参与路由；
+  4. 系统信任锚保持默认，不额外信任未知 CA。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <!-- 允许用户 CA，便于企业内网自签证书场景 -->
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
