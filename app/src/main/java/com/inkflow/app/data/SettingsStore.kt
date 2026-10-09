@@ -160,6 +160,10 @@ class SettingsStore(private val context: Context) {
         val KEY_AUTOSAVE = intPreferencesKey("autosave_interval")
         val KEY_GATE_SCORE = intPreferencesKey("gate_score")
         val KEY_TYPEWRITER = booleanPreferencesKey("typewriter")
+        val KEY_DEPTH_LEVEL = intPreferencesKey("depth_level")
+        val KEY_DEPTH_ANALOGIES = booleanPreferencesKey("depth_analogies")
+        val KEY_DEPTH_AMBIGUITY = booleanPreferencesKey("depth_ambiguity")
+        val KEY_VOICE_PROFILE = stringPreferencesKey("voice_profile")
 
         val KEY_LAST_PROJECT = stringPreferencesKey("last_project")
         val KEY_LAST_MODEL = stringPreferencesKey("last_used_model")
@@ -230,4 +234,18 @@ data class WritingPrefs(
     val autoSaveIntervalMs: Long = 8000,
     val qualityGateScore: Int = 70,
     val typewriterEffect: Boolean = true,
+
+    /**
+     * 写作深度 5..95。默认 55 = 平衡档。
+     *
+     * 存数值而不是档位名：作者可以把它拖到两档之间，
+     * 这正是「比通俗再厚一点」这类需求的表达方式。
+     */
+    val depthLevel: Int = 55,
+    /** 是否启用类比讲解（通俗向优先） */
+    val depthAnalogies: Boolean = true,
+    /** 是否允许留白（深度向优先） */
+    val depthAmbiguity: Boolean = false,
+    /** 参照的声纹来源作品名，空表示按深度自动匹配 */
+    val voiceProfileName: String = "",
 )

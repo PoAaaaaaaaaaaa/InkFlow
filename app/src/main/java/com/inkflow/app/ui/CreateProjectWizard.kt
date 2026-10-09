@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -41,6 +42,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -57,7 +59,12 @@ import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import coil3.request.crossfade
+import com.inkflow.app.InkFlowApp
 import com.inkflow.app.data.NovelRepository
+import com.inkflow.core.corpus.IntakeQuestionnaire
+import com.inkflow.core.corpus.IntakeQuestion
+import com.inkflow.core.corpus.IntakeSession
+import com.inkflow.core.corpus.QuestionKind
 import com.inkflow.core.domain.Project
 import kotlinx.coroutines.launch
 import java.io.File
@@ -76,14 +83,16 @@ private enum class WizardStep(val title: String, val subtitle: String) {
     Genre("题材与受众", "决定 AI 往哪个方向构思情节"),
     Style("写作风格", "决定 AI 用什么语气落笔"),
     Scale("规模与封面", "决定大纲分卷节奏"),
+    Intake("AI 提问", "这些问题的答案会直接喂给规划，决定大纲准不准"),
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CreateProjectWizard(
     repo: NovelRepository,
+    app: InkFlowApp,
     onDismiss: () -> Unit,
-    onCreated: (Project) -> Unit,
+    onCreated: (Project, Map<String, String>) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -103,9 +112,39 @@ fun CreateProjectWizard(
     var targetWords by remember { mutableStateOf(1_000_000L) }
     var coverUri by remember { mutableStateOf<Uri?>(null) }
 
+    // ---- AI 提问状态（第 5 步）----
+    var intakeSession by remember { mutableStateOf<IntakeSession?>(null) }
+    var intakeLoading by remember { mutableStateOf(false) }
+    var intakeError by remember { mutableStateOf<String?>(null) }
+
     val pickCover = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
     ) { uri -> if (uri != null) coverUri = uri }
+
+    // 首次进入提问步时生成问题。只生成一次，返回上一步再回来不重复消耗引擎。
+    fun steps_get(i: Int) = WizardStep.entries[i.coerceIn(0, WizardStep.entries.lastIndex)]
+
+    LaunchedEffect(step) {
+        if (steps_get(step) == WizardStep.Intake && intakeSession == null && !intakeLoading) {
+            intakeLoading = true
+            intakeError = null
+            runCatching {
+                val engine = app.router.activeEngine()
+                com.inkflow.core.agent.AgentPipeline(engine).generateIntakeQuestions(
+                    title = title,
+                    genre = genre,
+                    logline = logline,
+                    premise = premise,
+                    targetWords = if (targetWords > 0) targetWords.toString() else "",
+                ).output
+            }.onSuccess {
+                intakeSession = IntakeQuestionnaire.build("", emptyMap(), it)
+            }.onFailure {
+                intakeError = it.message ?: "未知错误"
+            }
+            intakeLoading = false
+        }
+    }
 
     val steps = WizardStep.entries
     val canNext = when (steps[step]) {
@@ -113,6 +152,8 @@ fun CreateProjectWizard(
         WizardStep.Genre -> genre.isNotBlank()
         WizardStep.Style -> true
         WizardStep.Scale -> true
+        // 必答题答完才放行；没生成出问题（引擎不可用且本地也无缺口）时直接放行
+        WizardStep.Intake -> intakeSession?.readyForBlueprint ?: true
     }
 
     Surface(
@@ -188,6 +229,22 @@ fun CreateProjectWizard(
                         premise = premise, onPremise = { premise = it },
                     )
 
+                    WizardStep.Intake -> IntakeStep(
+                        session = intakeSession,
+                        loading = intakeLoading,
+                        error = intakeError,
+                        onAnswer = { field, value ->
+                            intakeSession = intakeSession?.answer(field, value)
+                        },
+                        onRetry = {
+                            scope.launch {
+                                intakeLoading = true
+                                intakeError = null
+                                intakeSession = null
+                            }
+                        },
+                    )
+
                     WizardStep.Scale -> ScaleStep(
                         targetWords = targetWords, onTargetWords = { targetWords = it },
                         coverUri = coverUri,
@@ -240,7 +297,7 @@ fun CreateProjectWizard(
                                 // 自动建第一章，避免进入空白写作台
                                 repo.createChapter(project.id, "第1章")
                                 creating = false
-                                onCreated(project)
+                                onCreated(project, intakeSession?.answers.orEmpty())
                             }
                         }
                     },
@@ -406,6 +463,195 @@ private fun StyleStep(
         minLines = 4,
         modifier = Modifier.fillMaxWidth(),
     )
+}
+
+// ----------------------------------------------------------------------
+// 第 5 步：AI 提问
+// ----------------------------------------------------------------------
+
+/**
+ * 提问步。
+ *
+ * 这一页的价值在于**把作者脑子里的东西逼出来**。长篇写作最常见的失败不是文笔差，
+ * 是动笔时根本没想清楚主角要什么、对抗是什么。这些问题把「想清楚」提前到创建阶段，
+ * 成本最低，收益最大。
+ *
+ * 每个问题都带「为什么要问」——没有这一条，作者会一路跳过。
+ */
+@Composable
+private fun IntakeStep(
+    session: IntakeSession?,
+    loading: Boolean,
+    error: String?,
+    onAnswer: (String, String) -> Unit,
+    onRetry: () -> Unit,
+) {
+    HintCard(
+        "下面的问题由你的填写内容推导得出。答完它们，AI 才能生成一份真正属于这本书的大纲——"
+            + "否则只能给出一份泛泛的通用框架。"
+    )
+    Spacer(Modifier.height(14.dp))
+
+    when {
+        loading -> {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(10.dp))
+                Text("正在分析你的构思…", style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+
+        error != null -> {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(Modifier.padding(14.dp)) {
+                    Text("提问生成遇到问题", style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(4.dp))
+                    Text(error, style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "不影响继续创建作品，可以直接下一步；之后在写作台里也能重新生成。",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    TextButton(onClick = onRetry) { Text("重试") }
+                }
+            }
+        }
+
+        session == null || session.questions.isEmpty() -> {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(Modifier.padding(14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.Check,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("没有发现明显缺口", style = MaterialTheme.typography.titleSmall)
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "你填的信息已经足够生成一份可用的大纲。也可以直接进入下一步，"
+                            + "之后在写作台里再补充。",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
+
+        else -> {
+            val required = session.required
+            val optional = session.questions.filterNot { it.isRequired }
+
+            if (required.isNotEmpty()) {
+                Text(
+                    "必答（${required.count { it.field in session.answers }} / ${required.size}）",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.height(8.dp))
+                required.forEach { q ->
+                    QuestionCard(q, session.answers[q.field].orEmpty(), onAnswer)
+                    Spacer(Modifier.height(10.dp))
+                }
+            }
+
+            if (optional.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "选答（关系到细节质量）",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                optional.forEach { q ->
+                    QuestionCard(q, session.answers[q.field].orEmpty(), onAnswer)
+                    Spacer(Modifier.height(10.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QuestionCard(
+    q: IntakeQuestion,
+    answer: String,
+    onAnswer: (String, String) -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Text(q.question, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.Top) {
+                Icon(
+                    Icons.Default.Info,
+                    contentDescription = null,
+                    modifier = Modifier.size(13.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.width(5.dp))
+                Text(
+                    q.why,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+
+            when (q.kind) {
+                QuestionKind.Choice, QuestionKind.MultiChoice -> {
+                    // 选项多时用换行布局，避免横向溢出
+                    val chunks = q.options.chunked(2)
+                    chunks.forEach { row ->
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            row.forEach { opt ->
+                                FilterChip(
+                                    selected = answer == opt,
+                                    onClick = { onAnswer(q.field, opt) },
+                                    label = {
+                                        Text(opt, style = MaterialTheme.typography.bodySmall, maxLines = 1)
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                            if (row.size == 1) Spacer(Modifier.weight(1f))
+                        }
+                        Spacer(Modifier.height(6.dp))
+                    }
+                }
+
+                QuestionKind.LongText, QuestionKind.Text -> {
+                    OutlinedTextField(
+                        value = answer,
+                        onValueChange = { onAnswer(q.field, it) },
+                        placeholder = {
+                            if (q.placeholder.isNotBlank()) {
+                                Text(q.placeholder, style = MaterialTheme.typography.bodySmall)
+                            }
+                        },
+                        minLines = if (q.kind == QuestionKind.LongText) 3 else 1,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        }
+    }
 }
 
 // ----------------------------------------------------------------------

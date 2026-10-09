@@ -6,6 +6,9 @@ import com.inkflow.app.ai.EngineRouter
 import com.inkflow.app.data.NovelRepository
 import com.inkflow.app.data.SettingsStore
 import com.inkflow.core.agent.AgentPipeline
+import com.inkflow.core.corpus.Blueprint
+import com.inkflow.core.corpus.DepthProfile
+import com.inkflow.core.corpus.VoiceLibrary
 import com.inkflow.core.domain.Chapter
 import com.inkflow.core.domain.ChapterStatus
 import com.inkflow.core.domain.Character
@@ -86,6 +89,9 @@ class WriterViewModel(
             WriterIntent.GenerateHandoff -> generateHandoff()
             WriterIntent.RebuildStyleDna -> rebuildStyleDna()
             is WriterIntent.GenerateOutline -> generateOutline(intent.volumes, intent.chaptersPerVolume)
+            is WriterIntent.GenerateBlueprint -> generateBlueprint(intent.answers)
+            WriterIntent.ApplyBlueprint -> applyBlueprint()
+            WriterIntent.DiscardBlueprint -> _state.value = _state.value.copy(blueprint = null)
             WriterIntent.GenerateStoryBible -> generateStoryBible()
             is WriterIntent.AddChapter -> addChapter(intent.title)
             WriterIntent.SelectChapter -> { /* 由导航层处理 */ }
@@ -97,6 +103,16 @@ class WriterViewModel(
     // ------------------------------------------------------------------
     // 加载
     // ------------------------------------------------------------------
+
+    /**
+     * 应用层引用，用于取新建作品时暂存的问答答案。
+     * 由工厂注入；为空时（例如单元测试）跳过自动蓝图。
+     */
+    private var appRef: com.inkflow.app.InkFlowApp? = null
+
+    fun attachApp(app: com.inkflow.app.InkFlowApp) {
+        appRef = app
+    }
 
     private fun load(projectId: String, chapterId: String?) {
         viewModelScope.launch {
@@ -149,10 +165,31 @@ class WriterViewModel(
                 _state.value = _state.value.copy(loading = false)
             }
 
+            // 深度档与声纹：设置变更后立刻生效，不需要重启
+            launch {
+                settings.writingPrefs.collectLatest { prefs ->
+                    _state.value = _state.value.copy(
+                        depth = DepthProfile(
+                            level = prefs.depthLevel,
+                            analogies = prefs.depthAnalogies,
+                            ambiguity = prefs.depthAmbiguity,
+                        ),
+                        voiceProfileName = prefs.voiceProfileName,
+                    )
+                }
+            }
+
             // 后台重建检索索引（不阻塞界面）
             reindex(projectId)
 
             refreshEngineStatus()
+
+            // 新建作品首次进入：若带着问答答案，自动开始生成蓝图。
+            // 放在这里而不是创建流程里，是因为生成要跑几分钟、要显示进度，
+            // 而在写作台里展示进度比让用户干等在建作品页体验好得多。
+            appRef?.consumeIntakeAnswers(projectId)?.takeIf { it.isNotEmpty() }?.let { answers ->
+                generateBlueprint(answers)
+            }
         }
     }
 
@@ -382,6 +419,8 @@ class WriterViewModel(
                     previousHandoff = prevHandoff,
                     targetWords = prefs.chapterTargetWords,
                     genre = _state.value.genre,
+                    depth = _state.value.depth,
+                    voiceName = _state.value.voiceProfileName.ifBlank { null },
                 )
 
                 _state.value = _state.value.copy(
@@ -422,6 +461,8 @@ class WriterViewModel(
                     styleBlock = styleDna?.toPromptBlock().orEmpty(),
                     contextBlock = context,
                     genre = _state.value.genre,
+                    depth = _state.value.depth,
+                    voiceName = _state.value.voiceProfileName.ifBlank { null },
                 )
                 _state.value = _state.value.copy(
                     streamingText = result.output,
@@ -458,6 +499,7 @@ class WriterViewModel(
                     chapter.content,
                     styleDna?.toPromptBlock().orEmpty(),
                     genre = _state.value.genre,
+                    depth = _state.value.depth,
                 )
                 _state.value = _state.value.copy(
                     streamingText = result.output, isGenerating = false,
@@ -816,6 +858,191 @@ class WriterViewModel(
         }
     }
 
+    // ------------------------------------------------------------------
+    // 全书蓝图（需求 2）
+    // ------------------------------------------------------------------
+
+    /**
+     * 生成全书蓝图。
+     *
+     * 结果进 [WriterUiState.blueprint]，**不直接入库**——
+     * 规划是作品的地基，必须让作者先看到再决定（同 ADR-5 的原则）。
+     */
+    private fun generateBlueprint(answers: Map<String, String>) {
+        val projectId = _state.value.projectId
+        if (projectId.isBlank()) return
+        if (_state.value.blueprintGenerating) return
+
+        viewModelScope.launch {
+            _state.value = _state.value.copy(
+                blueprintGenerating = true,
+                blueprintStage = "正在准备…",
+                blueprintProgress = 0f,
+                error = null,
+            )
+            try {
+                val p = ensurePipeline()
+                val project = repo.getProject(projectId)
+                val entity = repo.getProjectEntity(projectId)
+
+                val result = p.expandBlueprint(
+                    projectId = projectId,
+                    title = _state.value.projectTitle,
+                    genre = _state.value.genre,
+                    tone = entity?.tone.orEmpty(),
+                    audience = entity?.audience.orEmpty().ifBlank { "通用" },
+                    logline = project?.logline.orEmpty(),
+                    premise = project?.premise.orEmpty(),
+                    targetWords = project?.targetWords ?: 1_000_000L,
+                    answers = answers,
+                    voiceName = _state.value.voiceProfileName.ifBlank { null },
+                    onProgress = { stage, progress ->
+                        // 回调来自生成协程，写状态前切到主线程语义
+                        viewModelScope.launch {
+                            _state.value = _state.value.copy(
+                                blueprintStage = stage,
+                                blueprintProgress = progress.toFloat(),
+                            )
+                        }
+                    },
+                )
+
+                _state.value = _state.value.copy(
+                    blueprint = result.output,
+                    blueprintGenerating = false,
+                    blueprintStage = "",
+                    blueprintProgress = 1f,
+                    degraded = result.degraded,
+                    message = "蓝图已生成：${result.output.volumes.size} 卷 / " +
+                        "${result.output.totalChapters} 章，确认后写入",
+                )
+            } catch (t: Throwable) {
+                _state.value = _state.value.copy(
+                    blueprintGenerating = false,
+                    blueprintStage = "",
+                    error = "蓝图生成失败：${t.message}",
+                )
+            }
+        }
+    }
+
+    /**
+     * 把蓝图写入数据库。
+     *
+     * 覆盖策略：分卷与章节**追加**，不删除已有内容。
+     * 理由：作者可能已经手写了几章，重建蓝图不该毁掉它们。
+     */
+    private fun applyBlueprint() {
+        val blueprint = _state.value.blueprint ?: return
+        val projectId = _state.value.projectId
+        if (projectId.isBlank()) return
+
+        viewModelScope.launch {
+            _state.value = _state.value.copy(blueprintGenerating = true, blueprintStage = "正在写入…")
+            try {
+                var volumeCount = 0
+                var chapterCount = 0
+
+                blueprint.volumes.forEach { vp ->
+                    val volume = repo.createVolume(
+                        projectId = projectId,
+                        title = vp.title,
+                        synopsis = vp.synopsis,
+                    )
+                    volumeCount++
+                    vp.chapters.forEach { cp ->
+                        repo.createChapter(
+                            projectId = projectId,
+                            title = cp.title,
+                            volumeId = volume.id,
+                            outline = cp.raw.ifBlank { cp.summaryLine },
+                        )
+                        chapterCount++
+                    }
+                }
+
+                if (blueprint.settings.isNotEmpty()) {
+                    repo.saveSettings(
+                        blueprint.settings.map {
+                            WorldSetting(
+                                id = NovelRepository.newId(),
+                                projectId = projectId,
+                                category = it.category,
+                                name = it.name,
+                                content = it.content,
+                                tags = it.tags,
+                            )
+                        }
+                    )
+                }
+
+                if (blueprint.characters.isNotEmpty()) {
+                    repo.saveCharacters(
+                        blueprint.characters.map {
+                            Character(
+                                id = NovelRepository.newId(),
+                                projectId = projectId,
+                                name = it.name,
+                                role = it.role,
+                                gender = it.gender,
+                                age = it.age,
+                                appearance = it.appearance,
+                                personality = it.personality,
+                                background = it.background,
+                                goal = it.goal,
+                                arc = it.arc,
+                                relationships = it.relationships,
+                            )
+                        }
+                    )
+                }
+
+                if (blueprint.foreshadows.isNotEmpty()) {
+                    repo.saveForeshadows(
+                        blueprint.foreshadows.map {
+                            Foreshadow(
+                                id = NovelRepository.newId(),
+                                projectId = projectId,
+                                title = it.title,
+                                detail = it.detail,
+                                plantedAt = it.plantedAt,
+                                plannedResolveAt = it.plannedResolveAt,
+                                importance = it.importance,
+                                status = ForeshadowStatus.Planted,
+                            )
+                        }
+                    )
+                }
+
+                // 把蓝图里解出的深度同步进设置，后续生成立刻按新档位走
+                val prefs = settings.writingPrefs.first()
+                settings.saveWritingPrefs(
+                    prefs.copy(
+                        depthLevel = blueprint.depth.level,
+                        depthAnalogies = blueprint.depth.analogies,
+                        depthAmbiguity = blueprint.depth.ambiguity,
+                    )
+                )
+
+                _state.value = _state.value.copy(
+                    blueprint = null,
+                    blueprintGenerating = false,
+                    blueprintStage = "",
+                    message = "已写入 $volumeCount 卷 $chapterCount 章，" +
+                        "${blueprint.settings.size} 条设定 / ${blueprint.characters.size} 位角色 / " +
+                        "${blueprint.foreshadows.size} 条伏笔",
+                )
+                reindex(projectId)
+            } catch (t: Throwable) {
+                _state.value = _state.value.copy(
+                    blueprintGenerating = false,
+                    blueprintStage = "",
+                    error = "蓝图写入失败：${t.message}",
+                )
+            }
+        }
+    }
+
     override fun onCleared() {
         super.onCleared()
         generationJob?.cancel()
@@ -835,7 +1062,7 @@ class WriterViewModel(
                         settings = app.settingsStore,
                         router = app.router,
                         contextStore = app.contextStore,
-                    ) as T
+                    ).also { it.attachApp(app) } as T
                 }
             }
     }

@@ -43,6 +43,25 @@ class InkFlowApp : Application() {
 
     val settingsStore: SettingsStore by lazy { SettingsStore(this) }
 
+    /**
+     * 新建作品时的问答答案，供写作台首次生成蓝图时取用。
+     *
+     * 【为什么放在这里而不是随导航参数传递】
+     * 答案是「作者 + 若干自由文本」的映射，序列化进 URL 既脆弱又难看，
+     * 而它的生命周期恰好就是「创建完成 → 首次生成蓝图」这一段。
+     * 用进程内的暂存把它绑定到 projectId，比塞进路由干净得多。
+     *
+     * 取用即清除（见 consumeIntakeAnswers），避免第二次打开作品时被旧答案污染。
+     */
+    private val intakeAnswers = java.util.concurrent.ConcurrentHashMap<String, Map<String, String>>()
+
+    fun stashIntakeAnswers(projectId: String, answers: Map<String, String>) {
+        if (answers.isNotEmpty()) intakeAnswers[projectId] = answers
+    }
+
+    fun consumeIntakeAnswers(projectId: String): Map<String, String> =
+        intakeAnswers.remove(projectId).orEmpty()
+
     /** 端侧写作语境仓库（本地 RAG）。全局唯一，跨页面复用索引。 */
     val contextStore: NovelContextStore by lazy { NovelContextStore() }
 

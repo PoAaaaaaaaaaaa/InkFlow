@@ -281,6 +281,24 @@ fun WriterScreen(
         }
     }
 
+    // 蓝图生成中：显示进度遮罩（生成一份 300 章细纲要跑好几分钟）
+    if (state.blueprintGenerating && state.blueprint == null) {
+        BlueprintProgressOverlay(stage = state.blueprintStage, progress = state.blueprintProgress)
+    }
+
+    // 蓝图观览：生成完成但未确认时全屏展示
+    state.blueprint?.let { bp ->
+        BlueprintScreen(
+            blueprint = bp,
+            generating = state.blueprintGenerating,
+            stage = state.blueprintStage,
+            progress = state.blueprintProgress,
+            onApply = { viewModel.onIntent(WriterIntent.ApplyBlueprint) },
+            onDiscard = { viewModel.onIntent(WriterIntent.DiscardBlueprint) },
+            onBack = { viewModel.onIntent(WriterIntent.DiscardBlueprint) },
+        )
+    }
+
     if (showReaderSettings) {
         ReaderSettingsSheet(
             prefs = readerPrefs,
@@ -631,7 +649,15 @@ private fun AiActionPanel(
             }
 
             Spacer(Modifier.height(8.dp))
-            ActionChip("记忆层", Icons.Default.Memory, Modifier.fillMaxWidth(), onClick = onOpenMemory)
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ActionChip("全书蓝图", Icons.Default.PlayArrow, Modifier.weight(1f)) {
+                    onIntent(WriterIntent.GenerateBlueprint())
+                }
+                ActionChip("记忆层", Icons.Default.Memory, Modifier.weight(1f), onClick = onOpenMemory)
+            }
 
             // 上次生成实际注入了什么上下文，让作者可核对
             if (state.lastContextPreview.isNotBlank()) {
@@ -690,6 +716,54 @@ private fun AiActionPanel(
                 Spacer(Modifier.height(8.dp))
                 ConsistencyCard(state.consistencyFindings)
             }
+        }
+    }
+}
+
+/**
+ * 蓝图生成进度遮罩。
+ *
+ * 为什么不放在对话框里：生成一份长篇蓝图要依次跑世界观、角色、伏笔、分卷、
+ * 逐卷细纲五到十几轮推理，耗时以分钟计。用对话框会诱导用户点「取消」，
+ * 用全屏遮罩 + 明确的阶段文案，用户知道它在按步骤往前走。
+ */
+@Composable
+private fun BlueprintProgressOverlay(stage: String, progress: Float) {
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background.copy(alpha = 0.97f),
+    ) {
+        Column(
+            Modifier.fillMaxSize().padding(32.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text("正在生成全书蓝图", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(10.dp))
+            Text(
+                stage.ifBlank { "准备中…" },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(18.dp))
+            LinearProgressIndicator(
+                progress = { progress.coerceIn(0f, 1f) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "${(progress * 100).toInt()}%",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(20.dp))
+            Text(
+                "会依次生成世界观、角色、伏笔、分卷，再逐卷细化每一章。\n" +
+                    "卷数越多耗时越长，请勿退出应用。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
         }
     }
 }

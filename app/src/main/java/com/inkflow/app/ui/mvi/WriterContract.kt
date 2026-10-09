@@ -2,6 +2,8 @@ package com.inkflow.app.ui.mvi
 
 import com.inkflow.core.agent.ConsistencyFinding
 import com.inkflow.core.agent.ReviewVerdict
+import com.inkflow.core.corpus.Blueprint
+import com.inkflow.core.corpus.DepthProfile
 import com.inkflow.core.domain.Chapter
 import com.inkflow.core.domain.ChapterStatus
 import com.inkflow.core.domain.Foreshadow
@@ -53,6 +55,22 @@ data class WriterUiState(
 
     val styleDna: StyleDna? = null,
     val foreshadows: List<Foreshadow> = emptyList(),
+
+    /** 当前写作深度档。由设置页驱动，每次生成时注入 */
+    val depth: DepthProfile = DepthProfile(),
+    /** 声纹参照来源作品名，空表示按深度自动匹配 */
+    val voiceProfileName: String = "",
+
+    /**
+     * 全书蓝图。
+     *
+     * 与 [chapters] 的关系：蓝图是**待确认的规划**，chapters 是已入库的章节。
+     * 分开是为了让作者先看再决定——规划是作品的地基，不能自动覆盖书架。
+     */
+    val blueprint: Blueprint? = null,
+    val blueprintStage: String = "",
+    val blueprintProgress: Float = 0f,
+    val blueprintGenerating: Boolean = false,
 
     val activeEngineName: String = "",
     val activeEngineId: String = "",
@@ -184,6 +202,19 @@ sealed interface WriterIntent {
 
     /** 生成全书大纲并写入数据库 */
     data class GenerateOutline(val volumes: Int = 4, val chaptersPerVolume: Int = 25) : WriterIntent
+
+    /**
+     * 生成全书蓝图（世界观 + 角色 + 伏笔 + 分卷 + 逐章细纲）。
+     * 结果先进 [WriterUiState.blueprint] 供观览，不直接入库。
+     */
+    data class GenerateBlueprint(
+        /** 问答答案，作为补充设定注入 */
+        val answers: Map<String, String> = emptyMap(),
+    ) : WriterIntent
+
+    /** 把蓝图写入数据库（用户确认后） */
+    data object ApplyBlueprint : WriterIntent
+    data object DiscardBlueprint : WriterIntent
     /** 依据蓝图生成角色与伏笔 */
     data object GenerateStoryBible : WriterIntent
 

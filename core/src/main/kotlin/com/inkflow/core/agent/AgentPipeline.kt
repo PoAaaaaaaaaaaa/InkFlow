@@ -4,8 +4,21 @@ import com.inkflow.core.ai.AiCapability
 import com.inkflow.core.ai.AiEngine
 import com.inkflow.core.ai.AiRequest
 import com.inkflow.core.ai.AiResponse
+import com.inkflow.core.corpus.Blueprint
+import com.inkflow.core.corpus.BlueprintStructure
+import com.inkflow.core.corpus.ChapterPlan
+import com.inkflow.core.corpus.CharacterPlan
 import com.inkflow.core.corpus.CorpusEngine
+import com.inkflow.core.corpus.DepthProfile
+import com.inkflow.core.corpus.DepthResolver
+import com.inkflow.core.corpus.ForeshadowPlan
+import com.inkflow.core.corpus.IntakeQuestion
+import com.inkflow.core.corpus.IntakeQuestionnaire
+import com.inkflow.core.corpus.QuestionKind
 import com.inkflow.core.corpus.SlopDetector
+import com.inkflow.core.corpus.VoiceLibrary
+import com.inkflow.core.corpus.VolumePlan
+import com.inkflow.core.corpus.WorldSettingPlan
 
 /**
  * 提示词工程中心。
@@ -56,12 +69,22 @@ object Prompts {
 细纲要具体到可以被直接扩写成 3000 字正文，禁止空话。
 """.trim()
 
-    fun chapterWriteSystem(styleBlock: String, contextBlock: String, corpusBlock: String = "") = buildString {
+    fun chapterWriteSystem(
+        styleBlock: String,
+        contextBlock: String,
+        corpusBlock: String = "",
+        rhythmBlock: String = "",
+    ) = buildString {
         appendLine(WRITING_CONSTITUTION)
         // 语料库紧跟宪法：它是「怎么写」层，比文风 DNA 更需要被放在前排
         if (corpusBlock.isNotBlank()) {
             appendLine()
             appendLine(corpusBlock)
+        }
+        // 节奏校准确切排在文风 DNA 之前，让「深度 > 声纹」的优先级在阅读顺序上先出现
+        if (rhythmBlock.isNotBlank()) {
+            appendLine()
+            appendLine(rhythmBlock)
         }
         if (styleBlock.isNotBlank()) {
             appendLine()
@@ -181,6 +204,167 @@ ${content.take(20000)}
 一句话故事：$logline
 核心设定：$premise
 """.trim()
+
+    // ------------------------------------------------------------------
+    // 建作前提问
+    // ------------------------------------------------------------------
+
+    val INTAKE_QUESTION_SYSTEM = """
+你是长篇小说策划，负责在动笔前把作者的构思问清楚。
+作者已经填了一些内容，你要找出**真正影响大纲质量**但还没说清的缺口，提出追问。
+
+规则：
+1. 每个问题必须具体到「答完之后能直接拿去写大纲」，禁止问「你想写什么」这类空问题；
+2. 只问作者已填内容里**没有覆盖**的维度，不要重复他已经写过的；
+3. 最多 6 个问题，按重要性排序，宁少勿多；
+4. 问题要贴合作者写的题材，问出这个题材特有的坑（例如写修真要问境界体系，写悬疑要问真相规模）；
+5. 每个问题附一句「为什么要问」，让作者知道这题影响什么。
+
+以 JSON 数组输出，每项：
+{"field":"英文短标识","question":"问题正文","why":"为什么要问","kind":"text|longtext|choice","options":["选项1","选项2"],"priority":1到3}
+priority：1 = 不问就写不出可用大纲，2 = 显著影响质量，3 = 锦上添花。
+只输出 JSON。
+""".trim()
+
+    fun intakeQuestionUser(
+        genre: String,
+        logline: String,
+        premise: String,
+        title: String,
+        targetWords: String,
+        knownGaps: String,
+    ) = """
+作品名：$title
+题材：$genre
+一句话故事：$logline
+核心设定：$premise
+目标字数：$targetWords
+
+【本地规则已检出的缺口（不要重复问这些）】
+$knownGaps
+
+请补充追问。
+""".trim()
+
+    // ------------------------------------------------------------------
+    // 蓝图展开
+    // ------------------------------------------------------------------
+
+    fun blueprintWorldSystem(depth: DepthProfile, genre: String) = """
+你是世界观架构师，为一部 $genre 长篇生成设定集。
+
+写作深度要求（影响设定的复杂度与说明方式）：
+${depth.toPromptBlock()}
+
+输出要求：
+- 给出 8-14 条设定，覆盖：地理/势力、力量体系（或核心规则）、关键物品、历史事件、社会结构；
+- 每条设定都必须能**直接产生冲突**，纯背景板设定不要写；
+- 力量体系必须有明确的代价或限制，不能是无限的；
+- 说明设定时按上面深度要求控制术语密度与解释方式。
+
+以 JSON 数组输出，每项：
+{"category":"地理|势力|力量体系|物品|历史|社会","name":"名称","content":"60-200字说明","tags":"逗号分隔"}
+只输出 JSON。
+""".trim()
+
+    fun blueprintCharactersSystem(depth: DepthProfile, genre: String) = """
+你是人物设定师，为一部 $genre 长篇设计角色。
+
+写作深度要求：
+${depth.toPromptBlock()}
+
+输出要求：
+- 4-8 位角色，必须包含：主角、主要对手、至少一位关系线人物；
+- 每位角色的「目标」必须与主角的目标**存在冲突**，不能是纯助攻；
+- 「人物弧光」写清他从什么状态变到什么状态；
+- 配角不要写满，留出成长空间。
+
+以 JSON 数组输出，每项：
+{"name":"","role":"主角|配角|反派","gender":"","age":"","appearance":"","personality":"","background":"","goal":"","arc":"","relationships":""}
+只输出 JSON。
+""".trim()
+
+    fun blueprintForeshadowSystem(totalChapters: Int) = """
+你是伏笔设计师。为一部共 $totalChapters 章的长篇设计伏笔台账。
+
+输出要求：
+- 5-10 条伏笔，覆盖全书三个幕；
+- 每条必须标注埋设章节与计划回收章节，回收章节不得早于埋设章节 + 3；
+- 高重要度伏笔（3）不超过 3 条；
+- 第一幕埋下的伏笔，至少要有一条回收在最后一幕。
+
+以 JSON 数组输出，每项：
+{"title":"","detail":"60-150字","plantedAt":章节号,"plannedResolveAt":章节号,"importance":1到3}
+只输出 JSON。
+""".trim()
+
+    fun blueprintVolumeSystem(depth: DepthProfile, genre: String) = """
+你是长篇结构设计师，为一部 $genre 作品写分卷大纲。
+
+写作深度要求：
+${depth.toPromptBlock()}
+
+你将收到**已经定好的结构参数**（卷数、每卷章数、每章字数）。
+这些数字是硬约束，不要改动，只需按它写出每一卷的内容。
+
+每卷需要：
+- 卷标题（有个性，不要「第一卷」这种占位符）；
+- 卷功能（铺垫/升级/转折/高潮，对应三幕结构）；
+- 卷梗概（100-200 字，说清这一卷的核心事件与结束时主角所处的位置）。
+
+以 JSON 数组输出，每项：
+{"title":"","function":"","synopsis":""}
+只输出 JSON。
+""".trim()
+
+    fun blueprintChaptersSystem(depth: DepthProfile, genre: String) = """
+你是章节细纲编剧。为一部 $genre 作品写某一卷的逐章细纲。
+
+写作深度要求：
+${depth.toPromptBlock()}
+
+每章细纲必须包含五个部分，缺一不可：
+- event：本章核心事件，必须是**可被写成一个场景**的具体事件，不是概述；
+- conflict：冲突点，谁在阻止主角、代价是什么；
+- emotion：情绪曲线，从什么情绪走到什么情绪；
+- hook：结尾钩子，必须落在具体的人、物或数字上，禁止「而这仅仅是开始」这类空话；
+- foreshadow：本章埋设或回收的伏笔，没有则留空。
+
+铁律：
+- 每章只写一件事，不要把三章的内容压进一章；
+- 相邻章节之间必须有推进关系，不能是并列的单元剧（除非结构需要）；
+- 每 4-6 章要有一个小高潮。
+
+以 JSON 数组输出，每项：
+{"order":章节序号,"title":"","event":"","conflict":"","emotion":"","hook":"","foreshadow":"","characters":["角色名"]}
+order 必须从给定的起始序号开始连续编号。只输出 JSON。
+""".trim()
+
+    fun blueprintChapterUser(
+        projectTitle: String,
+        volumeTitle: String,
+        volumeSynopsis: String,
+        startOrder: Int,
+        endOrder: Int,
+        previousEnding: String,
+        characterNames: String,
+        foreshadowList: String,
+    ) = """
+作品：《$projectTitle》
+本卷：$volumeTitle
+卷梗概：$volumeSynopsis
+
+请输入第 $startOrder 章到第 $endOrder 章，共 ${endOrder - startOrder + 1} 章的细纲。
+${if (previousEnding.isNotBlank()) "\n上一卷结尾的状态（必须承接）：\n$previousEnding\n" else ""}
+可用角色：$characterNames
+
+需要照应的伏笔：
+$foreshadowList
+""".trim()
+
+    /** 注入到所有生成提示词的节奏校准块。 */
+    fun rhythmBlock(depth: DepthProfile, genre: String, voiceName: String? = null): String =
+        VoiceLibrary.promptBlock(depth, genre, voiceName)
 }
 
 /**
@@ -289,14 +473,26 @@ class AgentPipeline(
         genre: String = "",
         /** 关闭时只注入 AI 腔禁忌清单，不注入选词样例与拆书参照 */
         includeCorpus: Boolean = true,
+        /** 写作深度档。决定句长、段落、比喻密度等可执行参数 */
+        depth: DepthProfile = DepthProfile(),
+        /** 指定参照的声纹来源作品名；为空时按深度自动匹配 */
+        voiceName: String? = null,
     ): AgentResult<String> {
         val corpusBlock = if (includeCorpus) {
             CorpusEngine.writingBlock(genre = genre)
         } else {
             CorpusEngine.writingBlock(genre = genre, includeDeconstruct = false)
         }
+        // 节奏校准单独成块并排在 corpusBlock 之后：
+        // 它是模型最需要精确执行的数值约束，不能混在「选词参考」里被当成建议
+        val rhythm = Prompts.rhythmBlock(depth, genre, voiceName)
         val resp = call(
-            system = Prompts.chapterWriteSystem(styleBlock, contextBlock, corpusBlock),
+            system = Prompts.chapterWriteSystem(
+                styleBlock = styleBlock,
+                contextBlock = contextBlock,
+                corpusBlock = corpusBlock,
+                rhythmBlock = rhythm,
+            ),
             user = Prompts.chapterWriteUser(
                 projectTitle, chapterOrder, chapterTitle, outline,
                 previousHandoff, targetWords, requirements,
@@ -319,12 +515,16 @@ class AgentPipeline(
         styleBlock: String = "",
         contextBlock: String = "",
         genre: String = "",
+        depth: DepthProfile = DepthProfile(),
+        voiceName: String? = null,
     ): AgentResult<String> {
         val system = buildString {
             appendLine(Prompts.CONTINUE_SYSTEM)
             // 续写场景下拆书参照意义不大（结构已经定了），但选词与禁忌清单必须带上
             val corpus = CorpusEngine.writingBlock(genre = genre, includeDeconstruct = false)
             if (corpus.isNotBlank()) { appendLine(); appendLine(corpus) }
+            val rhythm = Prompts.rhythmBlock(depth, genre, voiceName)
+            if (rhythm.isNotBlank()) { appendLine(); appendLine(rhythm) }
             if (styleBlock.isNotBlank()) { appendLine(); appendLine(styleBlock) }
             if (contextBlock.isNotBlank()) {
                 appendLine("===== 相关设定 =====")
@@ -364,6 +564,7 @@ class AgentPipeline(
         styleBlock: String,
         instruction: String = "",
         genre: String = "",
+        depth: DepthProfile = DepthProfile(),
     ): AgentResult<String> {
         // 润色时给出**这篇实际命中的**套话，而不是无差别糊一长串清单——
         // 模型看到具体证据才知道要改哪里，看到通用清单只会泛泛重写
@@ -378,6 +579,9 @@ class AgentPipeline(
         val system = buildString {
             append(Prompts.POLISH_SYSTEM)
             if (corpus.isNotBlank()) { appendLine(); appendLine(); append(corpus) }
+            // 润色是深度控制最有效的位置：结构已经写好，只需要调文字的松紧
+            appendLine()
+            appendLine(depth.toPromptBlock())
             if (styleBlock.isNotBlank()) { appendLine(); appendLine(styleBlock) }
         }
         val resp = call(
@@ -464,6 +668,427 @@ class AgentPipeline(
     /** 润色/改写时的正向选词参考。不带拆书——改写阶段不需要结构建议。 */
     private fun positiveLexicon(genre: String): String =
         CorpusEngine.writingBlock(genre = genre, includeDeconstruct = false)
+
+    // ------------------------------------------------------------------
+    // 内部
+    // ------------------------------------------------------------------
+
+
+    // ------------------------------------------------------------------
+    // 建作前提问（需求 1）
+    // ------------------------------------------------------------------
+
+    /**
+     * 基于作者已填内容生成追问。
+     *
+     * 【两层结构】本地规则先算出必答缺口，再让模型补语义追问。
+     * 模型不可用或输出无法解析时，**本地结果照常返回**——
+     * 提问功能不允许因为引擎问题而整体失效（用户建作品时最可能还没配模型）。
+     */
+    suspend fun generateIntakeQuestions(
+        title: String,
+        genre: String,
+        logline: String,
+        premise: String,
+        targetWords: String,
+        projectId: String = "",
+    ): AgentResult<List<IntakeQuestion>> {
+        val existing = mapOf(
+            "title" to title,
+            "genre" to genre,
+            "logline" to logline,
+            "premise" to premise,
+            "targetWords" to targetWords,
+        )
+
+        // 第一层：本地。永远执行，是主干。
+        val local = IntakeQuestionnaire.localQuestions(existing)
+
+        // 第二层：AI。失败就跳过，不影响本地结果。
+        val ai = runCatching {
+            val resp = call(
+                system = Prompts.INTAKE_QUESTION_SYSTEM,
+                user = Prompts.intakeQuestionUser(
+                    genre = genre,
+                    logline = logline,
+                    premise = premise,
+                    title = title,
+                    targetWords = targetWords,
+                    knownGaps = local.joinToString("\n") { "- ${it.question}" },
+                ),
+                maxTokens = 1536,
+                temperature = 0.7f,
+                jsonSchemaHint = "intake-questions",
+            )
+            parseIntakeQuestions(resp.text)
+        }.getOrDefault(emptyList())
+
+        val session = IntakeQuestionnaire.build(projectId, existing, ai)
+        return AgentResult(session.questions, engine.id, degraded = ai.isEmpty())
+    }
+
+    private fun parseIntakeQuestions(text: String): List<IntakeQuestion> {
+        val arr = JsonLite.extractArray(text) ?: return emptyList()
+        return arr.mapIndexedNotNull { i, obj ->
+            val question = JsonLite.str(obj, "question").orEmpty()
+            if (question.isBlank()) return@mapIndexedNotNull null
+            val field = JsonLite.str(obj, "field").orEmpty().ifBlank { "ai_$i" }
+            IntakeQuestion(
+                id = "q_ai_$field",
+                field = field,
+                question = question,
+                why = JsonLite.str(obj, "why").orEmpty().ifBlank { "这一项会影响后续大纲的准确度。" },
+                kind = when (JsonLite.str(obj, "kind").orEmpty().lowercase()) {
+                    "choice" -> QuestionKind.Choice
+                    "multichoice" -> QuestionKind.MultiChoice
+                    "longtext" -> QuestionKind.LongText
+                    else -> QuestionKind.Text
+                },
+                options = JsonLite.arrayOf(obj, "options").mapNotNull { JsonLite.rawString(it) },
+                priority = (JsonLite.int(obj, "priority") ?: 2).coerceIn(1, 3),
+                origin = "ai",
+            )
+        }.take(6)
+    }
+
+    // ------------------------------------------------------------------
+    // 全书蓝图（需求 2）
+    // ------------------------------------------------------------------
+
+    /**
+     * 展开全书蓝图：世界观 + 角色 + 伏笔 + 分卷 + 逐章细纲。
+     *
+     * 【为什么结构参数由代码算】
+     * 让模型「按 100 万字规划分卷」，它给出的方案从 12 卷到 400 章都出现过，
+     * 而且常常自相矛盾（说每卷 30 章，列出来 47 章）。
+     * 结构是算术问题，算术归代码；模型只负责往结构里填内容。
+     *
+     * @param answers 问答答案，会作为补充设定注入
+     * @param onProgress 进度回调（阶段名, 0..1），供 UI 显示「正在生成世界观…」
+     */
+    suspend fun expandBlueprint(
+        projectId: String,
+        title: String,
+        genre: String,
+        tone: String,
+        audience: String,
+        logline: String,
+        premise: String,
+        targetWords: Long,
+        answers: Map<String, String> = emptyMap(),
+        voiceName: String? = null,
+        onProgress: (String, Double) -> Unit = { _, _ -> },
+    ): AgentResult<Blueprint> {
+        // 1) 深度档：把用户的模糊偏好翻译成可执行参数
+        onProgress("正在解析写作深度…", 0.05)
+        val depth = DepthResolver.resolve(genre, tone, audience, answers)
+
+        // 2) 结构：纯算术，不消耗 token
+        val structure = BlueprintStructure.of(targetWords, DepthResolver.chapterLengthBias(answers))
+        onProgress("已确定结构：${structure.volumeCount} 卷 / ${structure.chapterCount} 章", 0.10)
+
+        val intake = IntakeQuestionnaire.build(projectId, emptyMap()).let { _ ->
+            // 只取答案文本，不重新生成问题
+            answers.entries.filter { it.value.isNotBlank() }
+                .joinToString("\n") { "- ${it.key}：${it.value}" }
+        }
+        val worldContext = """
+作品：《$title》
+题材：$genre
+基调：$tone
+受众：$audience
+一句话故事：$logline
+核心设定：$premise
+${if (intake.isNotBlank()) "\n作者补充说明：\n$intake" else ""}
+""".trim()
+
+        val usedEngine = engine.id
+        var degraded = false
+
+        // 3) 世界观
+        onProgress("正在生成世界观设定…", 0.15)
+        val settings = runCatching {
+            call(
+                system = Prompts.blueprintWorldSystem(depth, genre),
+                user = worldContext,
+                maxTokens = 3072,
+                temperature = 0.75f,
+                jsonSchemaHint = "world-settings",
+            ).let { resp ->
+                degraded = degraded || resp.degraded
+                parseSettings(resp.text)
+            }
+        }.getOrDefault(emptyList())
+
+        // 4) 角色
+        onProgress("正在设计角色…", 0.28)
+        val characters = runCatching {
+            call(
+                system = Prompts.blueprintCharactersSystem(depth, genre),
+                user = worldContext,
+                maxTokens = 3072,
+                temperature = 0.8f,
+                jsonSchemaHint = "characters",
+            ).let { resp ->
+                degraded = degraded || resp.degraded
+                parseCharacters(resp.text)
+            }
+        }.getOrDefault(emptyList())
+
+        // 5) 伏笔
+        onProgress("正在埋设伏笔…", 0.38)
+        val foreshadows = runCatching {
+            call(
+                system = Prompts.blueprintForeshadowSystem(structure.chapterCount),
+                user = worldContext + "\n\n可用角色：" + characters.joinToString("、") { it.name },
+                maxTokens = 2048,
+                temperature = 0.75f,
+                jsonSchemaHint = "foreshadows",
+            ).let { resp ->
+                degraded = degraded || resp.degraded
+                parseForeshadows(resp.text, structure.chapterCount)
+            }
+        }.getOrDefault(emptyList())
+
+        // 6) 分卷
+        onProgress("正在规划分卷…", 0.48)
+        val volumeShells = runCatching {
+            call(
+                system = Prompts.blueprintVolumeSystem(depth, genre),
+                user = buildString {
+                    appendLine(worldContext)
+                    appendLine()
+                    appendLine("结构参数（硬约束，不要改动）：")
+                    appendLine("- 全书共 ${structure.volumeCount} 卷")
+                    appendLine("- 每卷约 ${structure.chaptersPerVolume} 章")
+                    appendLine("- 全书共 ${structure.chapterCount} 章，每章约 ${structure.wordsPerChapter} 字")
+                    appendLine("- ${structure.actBreakdown}")
+                }.trim(),
+                maxTokens = 3072,
+                temperature = 0.75f,
+                jsonSchemaHint = "volumes",
+            ).let { resp ->
+                degraded = degraded || resp.degraded
+                parseVolumeShells(resp.text, structure.volumeCount)
+            }
+        }.getOrDefault(emptyList())
+
+        // 模型没给出足够卷数时，用占位卷补齐——宁可标题平庸，不能让结构残缺
+        val shells = if (volumeShells.size >= structure.volumeCount) {
+            volumeShells.take(structure.volumeCount)
+        } else {
+            volumeShells + (volumeShells.size until structure.volumeCount).map { i ->
+                VolumePlan(
+                    index = i,
+                    title = "第${i + 1}卷",
+                    function = actFunctionOf(i, structure.volumeCount),
+                    synopsis = "（本卷梗概待补充）",
+                )
+            }
+        }
+
+        val charNames = characters.joinToString("、") { it.name }.ifBlank { "（待定）" }
+        val fsList = foreshadows.take(10).joinToString("\n") {
+            "- ${it.title}（第 ${it.plantedAt} 章埋设，计划第 ${it.plannedResolveAt} 章回收）"
+        }.ifBlank { "（无）" }
+
+        // 7) 逐卷展开章节细纲
+        val volumes = mutableListOf<VolumePlan>()
+        var order = 1
+        var previousEnding = ""
+        shells.forEachIndexed { vi, shell ->
+            val start = order
+            // 末卷吃掉余数：前面各卷取 chaptersPerVolume，最后一段落到总章数上。
+            // 这样即使 chaptersPerVolume * volumeCount 与 chapterCount 不整除，
+            // 也不会漏章或越界。
+            val proposedEnd = start + structure.chaptersPerVolume - 1
+            val realEnd = if (vi == shells.lastIndex) structure.chapterCount
+            else proposedEnd.coerceAtMost(structure.chapterCount)
+            val perVolume = (realEnd - start + 1).coerceAtLeast(1)
+            onProgress(
+                "正在细化第${vi + 1}卷 / 共${shells.size}卷（第 $start-$realEnd 章）…",
+                0.50 + 0.45 * vi / shells.size.coerceAtLeast(1),
+            )
+
+            val chapters = runCatching {
+                call(
+                    system = Prompts.blueprintChaptersSystem(depth, genre),
+                    user = Prompts.blueprintChapterUser(
+                        projectTitle = title,
+                        volumeTitle = shell.title,
+                        volumeSynopsis = shell.synopsis,
+                        startOrder = start,
+                        endOrder = realEnd,
+                        previousEnding = previousEnding,
+                        characterNames = charNames,
+                        foreshadowList = fsList,
+                    ),
+                    maxTokens = (perVolume * 220).coerceIn(2048, 8192),
+                    temperature = 0.78f,
+                    jsonSchemaHint = "chapter-plans",
+                ).let { resp ->
+                    degraded = degraded || resp.degraded
+                    parseChapterPlans(resp.text, start, realEnd, structure.wordsPerChapter, charNames)
+                }
+            }.getOrDefault(emptyList())
+
+            val filled = fillMissingOrders(chapters, start, realEnd, structure.wordsPerChapter)
+            previousEnding = filled.lastOrNull()?.let { "${it.title}：${it.summaryLine}" }.orEmpty()
+
+            volumes += shell.copy(index = vi, chapters = filled)
+            order = realEnd + 1
+        }
+
+        onProgress("蓝图完成", 1.0)
+
+        return AgentResult(
+            Blueprint(
+                projectId = projectId,
+                title = title,
+                targetWords = targetWords,
+                settings = settings,
+                characters = characters,
+                foreshadows = foreshadows,
+                volumes = volumes,
+                structure = structure,
+                depth = depth,
+                engineId = usedEngine,
+                degraded = degraded,
+                generatedAt = System.currentTimeMillis(),
+            ),
+            usedEngine,
+            degraded,
+        )
+    }
+
+    private fun actFunctionOf(index: Int, total: Int): String = when {
+        total <= 1 -> "全书"
+        index == 0 -> "铺垫：建立人物与核心矛盾"
+        index == total - 1 -> "高潮：对决与回收"
+        index * 2 < total -> "升级：冲突扩大"
+        else -> "转折：中点反转与最低谷"
+    }
+
+    /** 保证章节序号连续无缺口。模型漏章时补占位，宁可有骨架也不要断号。 */
+    private fun fillMissingOrders(
+        chapters: List<ChapterPlan>,
+        start: Int,
+        end: Int,
+        wordsPerChapter: Int,
+    ): List<ChapterPlan> {
+        val byOrder = chapters.associateBy { it.order }
+        return (start..end).map { o ->
+            byOrder[o] ?: ChapterPlan(
+                order = o,
+                title = "第${o}章",
+                volumeIndex = 0,
+                targetWords = wordsPerChapter,
+            )
+        }
+    }
+
+    private fun parseSettings(text: String): List<WorldSettingPlan> {
+        val arr = JsonLite.extractArray(text) ?: return emptyList()
+        return arr.mapNotNull { obj ->
+            val name = JsonLite.str(obj, "name").orEmpty()
+            if (name.isBlank()) return@mapNotNull null
+            WorldSettingPlan(
+                category = JsonLite.str(obj, "category").orEmpty().ifBlank { "其他" },
+                name = name,
+                content = JsonLite.str(obj, "content").orEmpty(),
+                tags = JsonLite.str(obj, "tags").orEmpty(),
+            )
+        }
+    }
+
+    private fun parseCharacters(text: String): List<CharacterPlan> {
+        val arr = JsonLite.extractArray(text) ?: return emptyList()
+        return arr.mapNotNull { obj ->
+            val name = JsonLite.str(obj, "name").orEmpty()
+            if (name.isBlank()) return@mapNotNull null
+            CharacterPlan(
+                name = name,
+                role = JsonLite.str(obj, "role").orEmpty(),
+                gender = JsonLite.str(obj, "gender").orEmpty(),
+                age = JsonLite.str(obj, "age").orEmpty(),
+                appearance = JsonLite.str(obj, "appearance").orEmpty(),
+                personality = JsonLite.str(obj, "personality").orEmpty(),
+                background = JsonLite.str(obj, "background").orEmpty(),
+                goal = JsonLite.str(obj, "goal").orEmpty(),
+                arc = JsonLite.str(obj, "arc").orEmpty(),
+                relationships = JsonLite.str(obj, "relationships").orEmpty(),
+            )
+        }
+    }
+
+    private fun parseForeshadows(text: String, totalChapters: Int): List<ForeshadowPlan> {
+        val arr = JsonLite.extractArray(text) ?: return emptyList()
+        return arr.mapNotNull { obj ->
+            val title = JsonLite.str(obj, "title").orEmpty()
+            if (title.isBlank()) return@mapNotNull null
+            val planted = (JsonLite.int(obj, "plantedAt") ?: 1).coerceIn(1, totalChapters)
+            val resolve = (JsonLite.int(obj, "plannedResolveAt") ?: 0).coerceIn(0, totalChapters)
+            ForeshadowPlan(
+                title = title,
+                detail = JsonLite.str(obj, "detail").orEmpty(),
+                plantedAt = planted,
+                // 回收不得早于埋设 +3，否则伏笔等于没用
+                plannedResolveAt = if (resolve < planted + 3) (planted + 3).coerceAtMost(totalChapters) else resolve,
+                importance = (JsonLite.int(obj, "importance") ?: 2).coerceIn(1, 3),
+            )
+        }
+    }
+
+    private fun parseVolumeShells(text: String, expected: Int): List<VolumePlan> {
+        val arr = JsonLite.extractArray(text) ?: return emptyList()
+        return arr.mapIndexedNotNull { i, obj ->
+            val t = JsonLite.str(obj, "title").orEmpty()
+            if (t.isBlank()) return@mapIndexedNotNull null
+            VolumePlan(
+                index = i,
+                title = t,
+                synopsis = JsonLite.str(obj, "synopsis").orEmpty(),
+                function = JsonLite.str(obj, "function").orEmpty(),
+            )
+        }.take(expected.coerceAtLeast(1))
+    }
+
+    private fun parseChapterPlans(
+        text: String,
+        start: Int,
+        end: Int,
+        wordsPerChapter: Int,
+        charNames: String,
+    ): List<ChapterPlan> {
+        val arr = JsonLite.extractArray(text) ?: return emptyList()
+        val validNames = charNames.split('、').filter { it.isNotBlank() && it != "（待定）" }.toSet()
+        return arr.mapNotNull { obj ->
+            val order = JsonLite.int(obj, "order") ?: return@mapNotNull null
+            if (order !in start..end) return@mapNotNull null
+            val title = JsonLite.str(obj, "title").orEmpty().ifBlank { "第${order}章" }
+            ChapterPlan(
+                order = order,
+                title = title,
+                volumeIndex = 0,
+                event = JsonLite.str(obj, "event").orEmpty(),
+                conflict = JsonLite.str(obj, "conflict").orEmpty(),
+                emotionArc = JsonLite.str(obj, "emotion").orEmpty(),
+                hook = JsonLite.str(obj, "hook").orEmpty(),
+                foreshadow = JsonLite.str(obj, "foreshadow").orEmpty(),
+                characters = JsonLite.arrayOf(obj, "characters")
+                    .mapNotNull { JsonLite.rawString(it) }
+                    .filter { validNames.isEmpty() || it in validNames },
+                targetWords = wordsPerChapter,
+                raw = buildString {
+                    JsonLite.str(obj, "event")?.let { appendLine("事件：$it") }
+                    JsonLite.str(obj, "conflict")?.let { appendLine("冲突：$it") }
+                    JsonLite.str(obj, "emotion")?.let { appendLine("情绪：$it") }
+                    JsonLite.str(obj, "hook")?.let { appendLine("钩子：$it") }
+                    JsonLite.str(obj, "foreshadow")?.let { if (it.isNotBlank()) appendLine("伏笔：$it") }
+                }.trim(),
+            )
+        }.sortedBy { it.order }
+    }
 
     // ------------------------------------------------------------------
     // 内部

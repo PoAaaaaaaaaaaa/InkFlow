@@ -67,6 +67,7 @@ import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import coil3.request.crossfade
+import com.inkflow.app.InkFlowApp
 import com.inkflow.app.data.NovelRepository
 import com.inkflow.app.data.SettingsStore
 import com.inkflow.core.domain.Project
@@ -84,6 +85,7 @@ import java.io.File
 fun NovelListScreen(
     repo: NovelRepository,
     settings: SettingsStore,
+    app: InkFlowApp,
     onOpenProject: (String) -> Unit,
     onOpenSettings: () -> Unit,
 ) {
@@ -97,6 +99,8 @@ fun NovelListScreen(
     var deleteTarget by remember { mutableStateOf<Project?>(null) }
     var deleteStat by remember { mutableStateOf<NovelRepository.DeleteResult?>(null) }
     var showArchived by remember { mutableStateOf(false) }
+
+
 
     // 正在更换封面的作品 id，用于把选图结果写回正确的作品
     var coverTargetId by remember { mutableStateOf<String?>(null) }
@@ -206,9 +210,12 @@ fun NovelListScreen(
     if (showCreate) {
         CreateProjectWizard(
             repo = repo,
+            app = app,
             onDismiss = { showCreate = false },
-            onCreated = { project ->
+            onCreated = { project, intakeAnswers ->
                 showCreate = false
+                // 问答答案暂存到应用层，写作台首次进入时取用
+                app.stashIntakeAnswers(project.id, intakeAnswers)
                 onOpenProject(project.id)
             },
         )

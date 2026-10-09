@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Info
@@ -66,7 +67,11 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import com.inkflow.app.InkFlowApp
+import androidx.compose.foundation.clickable
 import com.inkflow.core.corpus.CorpusEngine
+import com.inkflow.core.corpus.DepthProfile
+import com.inkflow.core.corpus.DepthTier
+import com.inkflow.core.corpus.VoiceLibrary
 import com.inkflow.app.ai.CloudConfig
 import com.inkflow.app.ai.EnginePreference
 import com.inkflow.app.data.WritingPrefs
@@ -546,6 +551,203 @@ fun SettingsScreen(
                 }
                 ToggleRow("章节完成后自动生成交接笔记", writing.autoHandoff) { v ->
                     scope.launch { app.settingsStore.saveWritingPrefs(writing.copy(autoHandoff = v)) }
+                }
+            }
+
+            // ---------------- 写作深度 ----------------
+            SectionCard("写作深度") {
+                val depth = DepthProfile(
+                    level = writing.depthLevel,
+                    analogies = writing.depthAnalogies,
+                    ambiguity = writing.depthAmbiguity,
+                )
+                Text(
+                    "深度不是一个形容词，是一组可以执行的参数。拖动滑块会同时改变" +
+                        "目标句长、段落长度、比喻密度、心理描写占比——生成时逐条注入。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(10.dp))
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        depth.tier.label,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "${depth.level}/100",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.height(2.dp))
+                Text(depth.tier.blurb, style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(8.dp))
+
+                Slider(
+                    value = writing.depthLevel.toFloat(),
+                    onValueChange = { v ->
+                        scope.launch {
+                            app.settingsStore.saveWritingPrefs(writing.copy(depthLevel = v.toInt()))
+                        }
+                    },
+                    valueRange = 5f..95f,
+                )
+
+                // 具名档快捷跳转：数值滑块给精细控制，档位按钮给「我知道自己要什么」
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    DepthTier.entries.take(3).forEach { tier ->
+                        FilterChip(
+                            selected = depth.tier == tier,
+                            onClick = {
+                                scope.launch {
+                                    app.settingsStore.saveWritingPrefs(writing.copy(depthLevel = tier.level))
+                                }
+                            },
+                            label = { Text(tier.label, style = MaterialTheme.typography.bodySmall) },
+                        )
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    DepthTier.entries.drop(3).forEach { tier ->
+                        FilterChip(
+                            selected = depth.tier == tier,
+                            onClick = {
+                                scope.launch {
+                                    app.settingsStore.saveWritingPrefs(writing.copy(depthLevel = tier.level))
+                                }
+                            },
+                            label = { Text(tier.label, style = MaterialTheme.typography.bodySmall) },
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(10.dp))
+
+                Text("执行标准（会逐条注入提示词）", style = MaterialTheme.typography.labelLarge)
+                Spacer(Modifier.height(6.dp))
+                AboutRow("目标句长", "平均 ${depth.sentenceLengthTarget} 字")
+                AboutRow("目标段落", "平均 ${depth.paragraphLengthTarget} 字")
+                AboutRow("比喻密度", "每千字 ≤ ${String.format("%.1f", depth.metaphorPer1kMax)} 次")
+                AboutRow("心理描写", "约 ${(depth.introspectionRatio * 100).toInt()}%")
+                AboutRow("专业术语", "每千字 ≤ ${String.format("%.1f", depth.jargonPer1kMax)} 个")
+                Spacer(Modifier.height(10.dp))
+
+                ToggleRow("类比讲解（通俗向）", writing.depthAnalogies) { v ->
+                    scope.launch { app.settingsStore.saveWritingPrefs(writing.copy(depthAnalogies = v)) }
+                }
+                Text(
+                    "开启后，出现设定或专业概念时 AI 会当场用生活化的方式解释一遍，" +
+                        "让没有背景知识的读者也能跟上。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+
+                ToggleRow("允许留白（深度向）", writing.depthAmbiguity) { v ->
+                    scope.launch { app.settingsStore.saveWritingPrefs(writing.copy(depthAmbiguity = v)) }
+                }
+                Text(
+                    "开启后 AI 可以不把话说完：动机不写明、结局不给答案。对追求即时满足的读者是伤害，默认关闭。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            // ---------------- 声纹参照 ----------------
+            SectionCard("声纹参照") {
+                Text(
+                    "声纹是「同类型作品怎么写」的可测量特征：句子呼吸长度、对话占比、标点习惯、用词层级。" +
+                        "它不是原文——五本长篇合计上千万字，既装不进上下文，就算装进去也学不到「该怎么写这一章」。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(10.dp))
+
+                val profiles = VoiceLibrary.profiles
+                FilterChip(
+                    selected = writing.voiceProfileName.isBlank(),
+                    onClick = {
+                        scope.launch { app.settingsStore.saveWritingPrefs(writing.copy(voiceProfileName = "")) }
+                    },
+                    label = { Text("自动匹配", style = MaterialTheme.typography.bodySmall) },
+                )
+                Spacer(Modifier.height(6.dp))
+
+                profiles.forEach { v ->
+                    val selected = writing.voiceProfileName == v.name
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 3.dp)
+                            .clickable {
+                                scope.launch {
+                                    app.settingsStore.saveWritingPrefs(
+                                        writing.copy(voiceProfileName = if (selected) "" else v.name)
+                                    )
+                                }
+                            },
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer
+                            else MaterialTheme.colorScheme.surface
+                        ),
+                    ) {
+                        Column(Modifier.padding(10.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    "《${v.name}》",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                if (selected) {
+                                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                            Text(
+                                "${v.author} · ${v.genre}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(3.dp))
+                            Text(
+                                "句长 ${String.format("%.1f", v.avgSentenceLength)} 字 · " +
+                                    "短句 ${(v.shortRatio * 100).toInt()}% · " +
+                                    "对话 ${(v.dialogueRatio * 100).toInt()}% · " +
+                                    "口语 ${v.colloquialism.toInt()}/100",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Spacer(Modifier.height(3.dp))
+                            Text(
+                                v.reliabilityLabel,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (v.isReliable) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.tertiary,
+                            )
+                            if (v.source.isNotBlank()) {
+                                Text(
+                                    v.source,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (writing.voiceProfileName.isNotBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "已选中「${writing.voiceProfileName}」。生成时会额外注入它的节奏特征，" +
+                            "并与当前深度档做一致性校准——两者冲突时以深度为准。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
                 }
             }
 

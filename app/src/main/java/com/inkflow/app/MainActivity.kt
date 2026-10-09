@@ -45,6 +45,7 @@ private fun InkFlowNavHost(app: InkFlowApp) {
             NovelListScreen(
                 repo = app.repository,
                 settings = app.settingsStore,
+                app = app,
                 onOpenProject = { projectId ->
                     app.appScope.let { }
                     navController.navigate(Routes.writer(projectId))
