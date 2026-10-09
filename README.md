@@ -344,7 +344,7 @@ echo "sdk.dir=$ANDROID_HOME" > local.properties
 
 ## 安装
 
-从 [Releases](../../releases) 下载最新 APK，或从 Actions 的 Artifacts 中获取构建产物。
+从 [Releases](https://github.com/PoAaaaaaaaaaaa/InkFlow/releases) 下载最新 APK，或从 Actions 的 Artifacts 中获取构建产物。
 
 - `InkFlow-release-*.apk` — 日常安装
 - `InkFlow-debug-*.apk` — 排查问题
@@ -365,6 +365,33 @@ echo "sdk.dir=$ANDROID_HOME" > local.properties
 4. **不静默降级**。每次生成的来源（本地/云端/兜底）都在界面上如实标注。
 5. **AI 文本不自动入库**。生成内容先进预览区，用户确认后才并入正文。
 6. **第一章之前**：文风 DNA 与检索索引全部在本地计算，不上传任何样本。
+
+---
+
+## 快速上手
+
+1. **安装**：从 [Releases](https://github.com/PoAaaaaaaaaaaa/InkFlow/releases) 下载 `app-release.apk`（约 48MB）
+2. **新建作品**：填作品名、题材、一句话故事、核心设定
+3. **规划**：AI 写作面板里点「构建作品蓝图」→ 生成角色卡与伏笔；点「规划全书」→ 生成分卷分章大纲
+4. **开写**：逐章「生成整章」→ 预览确认 → 插入正文 → 自己打磨
+5. **守住质量**：质检 → 一致性检查 → 交接笔记 → 定稿（过门禁）
+
+详细操作见 [docs/USAGE.md](docs/USAGE.md)，设计取舍见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+
+---
+
+## 已验证状态
+
+| 验证项 | 结果 |
+|---|---|
+| core 单元测试 | ✅ 55/55 通过（本地 + GitHub Actions 双跑通） |
+| Kotlin 编译 + KSP（Room） | ✅ 通过（aarch64 本机） |
+| Debug APK 构建 | ✅ 通过（GitHub Actions） |
+| Release APK 构建（R8 + 资源压缩） | ✅ 通过（GitHub Actions） |
+| GitHub Release 自动发布 | ✅ 已发布 [v1.0.0](https://github.com/PoAaaaaaaaaaaa/InkFlow/releases/tag/v1.0.0) |
+
+> 本地（aarch64 Android）无法完成 APK 打包：Android SDK 的 `aapt2` 官方只提供 x86_64 二进制
+> （已用 `file` 验证 ELF machine = `0x3e`）。因此云构建是本项目的必需环节，而非可选项。
 
 ---
 
