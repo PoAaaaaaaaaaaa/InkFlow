@@ -61,7 +61,8 @@ android {
             signingConfig = if (hasReleaseSigning) {
                 signingConfigs.getByName("release")
             } else {
-                signingConfigs.getByName("debug")
+                // 未提供正式签名时回退 debug 签名，保证任何环境都能出包
+                signingConfigs.findByName("debug")
             }
         }
     }
@@ -131,9 +132,10 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
 
     // ---- 端侧 AI：Gemini Nano via ML Kit GenAI（AICore 系统服务）----
-    // 用 compileOnly：设备没有 AICore 时不会因缺少 native 库而崩溃，
-    // 运行时通过反射式软依赖降级到其他引擎。
-    compileOnly(libs.mlkit.genai.prompt)
+    // 用 implementation 打包（AAR 仅约 1MB）：设备没有 AICore 时
+    // checkStatus() 会返回 UNAVAILABLE，由 EngineRouter 正常降级，
+    // 不需要靠 compileOnly + 反射来规避崩溃。
+    implementation(libs.mlkit.genai.prompt)
 
     // ---- 端侧 AI：LiteRT-LM 本地大模型（GPU/NPU 加速，支持自导入 .litertlm）----
     implementation(libs.litertlm.android)
