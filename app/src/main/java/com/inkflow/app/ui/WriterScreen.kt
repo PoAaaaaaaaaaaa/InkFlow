@@ -725,6 +725,8 @@ private fun QualitySummaryCard(report: com.inkflow.core.quality.QualityReport) {
             DimensionText("文风", report.style.displayValue)
             DimensionText("连续", report.continuity.displayValue)
             DimensionText("伏笔", report.foreshadow.active)
+            // AI 腔维度是反向指标：展示风险值而不是分数，避免作者看反
+            DimensionText("AI腔", report.aiFlavorRisk)
         }
         if (report.issues.isNotEmpty()) {
             Spacer(Modifier.height(8.dp))

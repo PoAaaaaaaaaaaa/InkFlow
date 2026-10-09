@@ -265,7 +265,9 @@ class WriterViewModel(
             if (c.status == ChapterStatus.Polished) {
                 // 从「已润色」升到「定稿」需要过质量门禁
                 val report = _state.value.qualityReport
-                    ?: QualityEvaluator.evaluate(c, characters, foreshadows, styleDna)
+                    ?: QualityEvaluator.evaluate(
+                        c, characters, foreshadows, styleDna, genre = _state.value.genre,
+                    )
                 if (!report.passesGate(prefs.qualityGateScore)) {
                     _state.value = _state.value.copy(error = "质量门禁未通过：${report.gateReason(prefs.qualityGateScore)}")
                     return@launch
@@ -379,6 +381,7 @@ class WriterViewModel(
                     contextBlock = context,
                     previousHandoff = prevHandoff,
                     targetWords = prefs.chapterTargetWords,
+                    genre = _state.value.genre,
                 )
 
                 _state.value = _state.value.copy(
@@ -418,6 +421,7 @@ class WriterViewModel(
                     length = length,
                     styleBlock = styleDna?.toPromptBlock().orEmpty(),
                     contextBlock = context,
+                    genre = _state.value.genre,
                 )
                 _state.value = _state.value.copy(
                     streamingText = result.output,
@@ -450,7 +454,11 @@ class WriterViewModel(
             )
             try {
                 val p = ensurePipeline()
-                val result = p.polish(chapter.content, styleDna?.toPromptBlock().orEmpty())
+                val result = p.polish(
+                    chapter.content,
+                    styleDna?.toPromptBlock().orEmpty(),
+                    genre = _state.value.genre,
+                )
                 _state.value = _state.value.copy(
                     streamingText = result.output, isGenerating = false,
                     degraded = result.degraded, generationLabel = "",
@@ -606,6 +614,7 @@ class WriterViewModel(
                 foreshadows = foreshadows,
                 styleDna = styleDna,
                 recentTexts = prev,
+                genre = _state.value.genre,
             )
             repo.updateChapterScore(chapter.id, report.totalScore)
             _state.value = _state.value.copy(qualityReport = report)

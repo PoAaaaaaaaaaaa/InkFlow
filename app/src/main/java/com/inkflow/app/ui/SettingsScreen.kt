@@ -66,6 +66,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import com.inkflow.app.InkFlowApp
+import com.inkflow.core.corpus.CorpusEngine
 import com.inkflow.app.ai.CloudConfig
 import com.inkflow.app.ai.EnginePreference
 import com.inkflow.app.data.WritingPrefs
@@ -546,6 +547,28 @@ fun SettingsScreen(
                 ToggleRow("章节完成后自动生成交接笔记", writing.autoHandoff) { v ->
                     scope.launch { app.settingsStore.saveWritingPrefs(writing.copy(autoHandoff = v)) }
                 }
+            }
+
+            // ---------------- 语料库自检 ----------------
+            SectionCard("AI 语料库") {
+                val corpus = CorpusEngine.stats()
+                Text(
+                    "生成时注入的三层参照：先给可以写什么（具体化选词），再给别写什么（AI 腔禁忌），"
+                        + "最后给同类作品的留人机制（拆书）。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                AboutRow("AI 腔词条", "${corpus.slopEntries} 条")
+                AboutRow("句式模板", "${corpus.slopPatterns} 条")
+                AboutRow("具体化选词", "${corpus.vaultEntries} 组 / ${corpus.vaultConcreteCount} 条")
+                AboutRow("拆书作品", "${corpus.booksVerified} / ${corpus.booksTotal} 本已验证")
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "未核实的书目不会给出拆解结论——宁可少给，不给假的。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             // ---------------- 关于 ----------------

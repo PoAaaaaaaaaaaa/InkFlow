@@ -56,6 +56,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.inkflow.app.InkFlowApp
+import com.inkflow.core.corpus.CorpusEngine
+import com.inkflow.core.corpus.DeconstructLibrary
+import com.inkflow.core.corpus.SensoryVault
+import com.inkflow.core.corpus.SlopCategory
+import com.inkflow.core.corpus.SlopLexicon
 import com.inkflow.core.rag.IndexEntry
 import com.inkflow.core.rag.MemoryPreview
 import com.inkflow.core.rag.MemoryStats
@@ -146,6 +151,7 @@ fun MemoryScreen(
                 Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("概览") })
                 Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("记忆条目") })
                 Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("召回预览") })
+                Tab(selected = tab == 3, onClick = { tab = 3 }, text = { Text("语料库") })
             }
 
             if (loading) {
@@ -168,7 +174,7 @@ fun MemoryScreen(
                     kinds = stats?.byKind?.map { it.kind } ?: emptyList(),
                 )
 
-                else -> PreviewTab(
+                else -> if (tab == 2) PreviewTab(
                     query = query,
                     onQueryChange = { query = it },
                     preview = preview,
@@ -185,7 +191,212 @@ fun MemoryScreen(
                             previewing = false
                         }
                     },
-                )
+                ) else CorpusTab(genre = "")
+            }
+        }
+    }
+}
+
+/**
+ * 语料库标签页。
+ *
+ * 语料库不是「记忆」（那是作品自己的内容），而是写作时注入的**通用参照**：
+ * 别写什么（AI 腔禁忌）、可以写什么（具体化选词）、同类作品靠什么留人（拆书）。
+ *
+ * 与记忆层放在同一个界面的理由：作者对「AI 到底带了什么上场」的疑问是同一个，
+ * 分到两个入口只会让人找不到。
+ */
+@Composable
+private fun CorpusTab(genre: String) {
+    val stats = remember { CorpusEngine.stats() }
+    val books = remember { DeconstructLibrary.verifiedCards }
+    val pending = remember { DeconstructLibrary.unverifiedTitles }
+    var expandedSlop by remember { mutableStateOf(false) }
+    var expandedVault by remember { mutableStateOf(false) }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                Column(Modifier.padding(14.dp)) {
+                    Text("语料库", style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(4.dp))
+                    Text(stats.summary, style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "每次生成正文时，这三层会一起注入：先说可以写什么，再说别写什么，最后给同类作品的留人机制。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
+        // ---- 一、AI 腔词库 ----
+        item {
+            Card {
+                Column(Modifier.padding(14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("AI 腔词库", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                        Text(
+                            "${stats.slopEntries} 条 + ${stats.slopPatterns} 句式",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    if (!expandedSlop) {
+                        Text(
+                            SlopLexicon.entries.filter { it.severity >= 3 }.take(10).joinToString("、") { it.phrase },
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    } else {
+                        SlopCategory.entries.forEach { cat ->
+                            val items = SlopLexicon.byCategory(cat)
+                            if (items.isEmpty()) return@forEach
+                            Spacer(Modifier.height(8.dp))
+                            Text("${cat.label}（${items.size}）", style = MaterialTheme.typography.labelMedium)
+                            Text(
+                                cat.advice,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(3.dp))
+                            items.forEach { e ->
+                                Text(
+                                    "· ${e.phrase} — ${e.why}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedButton(onClick = { expandedSlop = !expandedSlop }) {
+                        Text(if (expandedSlop) "收起" else "按分类展开全部")
+                    }
+                }
+            }
+        }
+
+        // ---- 二、具体化选词库 ----
+        item {
+            Card {
+                Column(Modifier.padding(14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("具体化选词库", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                        Text(
+                            "${stats.vaultEntries} 组 · ${stats.vaultConcreteCount} 条",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "删掉套话之后要填什么？这一层给的是方向，不是同义词表。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    val shown = if (expandedVault) SensoryVault.entries else SensoryVault.entries.take(4)
+                    shown.forEach { entry ->
+                        Text(
+                            "▸ ${entry.generic}（${entry.sense.label}）",
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                        entry.concrete.take(if (expandedVault) 6 else 2).forEach {
+                            Text("   · $it", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Spacer(Modifier.height(6.dp))
+                    }
+                    OutlinedButton(onClick = { expandedVault = !expandedVault }) {
+                        Text(if (expandedVault) "收起" else "展开全部 ${SensoryVault.entries.size} 组")
+                    }
+                }
+            }
+        }
+
+        // ---- 三、拆书库 ----
+        item {
+            Card {
+                Column(Modifier.padding(14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("拆书作品库", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                        Text(
+                            "已验证 ${stats.booksVerified}/${stats.booksTotal}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "只学机制，不抄情节。每条结论都带证据与迁移方法。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        items(books) { book ->
+            Card {
+                Column(Modifier.padding(14.dp)) {
+                    Text("《${book.title}》", style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        "${book.author} · ${book.genre}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        book.scale,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (book.caveat.isNotBlank()) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "⚠ ${book.caveat}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.tertiary,
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    book.findings.forEach { f ->
+                        Text("【${f.aspect.label}】", style = MaterialTheme.typography.labelMedium)
+                        Text(f.mechanism, style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            "→ ${f.transferable}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                    }
+                }
+            }
+        }
+
+        if (pending.isNotEmpty()) {
+            item {
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                    Column(Modifier.padding(14.dp)) {
+                        Text("待补全（${pending.size} 本）", style = MaterialTheme.typography.titleSmall)
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "以下书名在公开渠道未能核到可靠详情页，因此不提供拆解结论——" +
+                                "宁可少给，不给假的。补全后会自动出现在上方列表。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        pending.forEach {
+                            Text("· 《$it》", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
             }
         }
     }

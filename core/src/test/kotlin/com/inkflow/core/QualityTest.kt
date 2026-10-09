@@ -8,6 +8,7 @@ import com.inkflow.core.domain.Foreshadow
 import com.inkflow.core.style.StyleAnalyzer
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class StyleAnalyzerTest {
@@ -212,5 +213,81 @@ class QualityEvaluatorTest {
         val report = QualityEvaluator.evaluate(chapter(current, order = 2), recentTexts = listOf(prev))
         assertTrue(report.continuity.value >= 0, "连续性维度应可评估")
         assertTrue(report.continuity.value < 100, "生硬衔接应扣分，实际 ${report.continuity.value}")
+    }
+
+
+    // ------------------------------------------------------------------
+    // AI 腔维度（v1.3.0 新增）
+    // ------------------------------------------------------------------
+
+    @Test
+    fun aiFlavorDimensionPenalisesClichédText() {
+        val cliche = buildString {
+            repeat(12) {
+                appendLine("她心中五味杂陈，空气仿佛凝固了，月光如水洒在她的脸上。")
+                appendLine("他深深地看了她一眼，不禁倒吸一口凉气，瞳孔骤然收缩。")
+                appendLine("这一刻，整个世界都安静了，时间仿佛静止，她不由自主地后退了半步。")
+            }
+        }
+        val report = QualityEvaluator.evaluate(chapter(cliche))
+        assertTrue(report.issues.any { it.type == IssueType.AiFlavor }, "应检出 AI 腔问题")
+        assertTrue(report.aiFlavorRisk > 30, "AI 腔风险应为正，实际 ${report.aiFlavorRisk}")
+        assertTrue(report.aiFlavor.value < 70, "AI 腔维度应给低分，实际 ${report.aiFlavor.value}")
+    }
+
+    @Test
+    fun aiFlavorDimensionRewardsConcreteText() {
+        val concrete = buildString {
+            repeat(12) {
+                appendLine("他把杯子放回桌上，放得很轻，杯底和桌面之间有一下很短的摩擦声。")
+                appendLine("窗外的车开过去了，尾灯在墙上亮了一截，然后又暗下去。")
+                appendLine("他低头看自己的手，指甲缝里还有昨天修车留下的黑印，洗不干净。")
+            }
+        }
+        val report = QualityEvaluator.evaluate(chapter(concrete))
+        assertFalse(report.issues.any { it.type == IssueType.AiFlavor }, "具体文本不应被判定为 AI 腔")
+        assertTrue(report.aiFlavorRisk < 30, "AI 腔风险应低，实际 ${report.aiFlavorRisk}")
+    }
+
+    @Test
+    fun aiFlavorRiskIsMinusOneForTinySample() {
+        val report = QualityEvaluator.evaluate(chapter("他推开门。"))
+        assertEquals(-1, report.aiFlavorRisk, "样本不足时应返回 -1 而不是 0")
+    }
+
+    @Test
+    fun aiFlavorAffectsTotalScore() {
+        val clean = buildString {
+            repeat(12) {
+                appendLine("他把烟按灭在没抽完的位置，起身时椅子腿在地上刮出一声。")
+                appendLine("外面在下雨，雨点打在铁皮雨棚上，声音很密。")
+                appendLine("他数了数桌上的零钱，一共七张，其中两张是破的。")
+            }
+        }
+        val cliche = buildString {
+            repeat(12) {
+                appendLine("他心中五味杂陈，深深地叹了口气，不由自主地望向窗外。")
+                appendLine("空气仿佛凝固了，时间仿佛静止，整个世界都安静了下来。")
+                appendLine("这一刻，他仿佛感受到了某种难以形容的情感，思绪万千。")
+            }
+        }
+        val cleanScore = QualityEvaluator.evaluate(chapter(clean)).totalScore
+        val clicheScore = QualityEvaluator.evaluate(chapter(cliche)).totalScore
+        assertTrue(cleanScore > clicheScore, "套话文本总分应低于具体文本：干净 $cleanScore vs 套话 $clicheScore")
+    }
+
+    @Test
+    fun aiFlavorIsIndependentOfOtherDimensions() {
+        // 情节连贯、标点规范、句长合适，但通篇套话——这正是 AI 腔独立成维的理由
+        val text = buildString {
+            repeat(15) {
+                appendLine("他走进房间，看见了桌上的信，然后坐了下来。")
+                appendLine("他心中五味杂陈，深深地叹了口气，不由自主地看着那封信。")
+                appendLine("空气仿佛凝固了，时间仿佛静止，整个世界都安静了下来。")
+            }
+        }
+        val report = QualityEvaluator.evaluate(chapter(text))
+        assertTrue(report.coherence.value > 60, "连贯性不应因套话而崩")
+        assertTrue(report.issues.any { it.type == IssueType.AiFlavor }, "但 AI 腔维度必须报警")
     }
 }

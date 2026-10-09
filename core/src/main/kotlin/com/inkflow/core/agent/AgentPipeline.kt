@@ -4,6 +4,8 @@ import com.inkflow.core.ai.AiCapability
 import com.inkflow.core.ai.AiEngine
 import com.inkflow.core.ai.AiRequest
 import com.inkflow.core.ai.AiResponse
+import com.inkflow.core.corpus.CorpusEngine
+import com.inkflow.core.corpus.SlopDetector
 
 /**
  * 提示词工程中心。
@@ -23,6 +25,8 @@ object Prompts {
 4. 避免 AI 腔：不写"总之""值得一提的是""仿佛整个世界都"这类空泛套话；不滥用排比与形容词堆砌。
 5. 对话要有潜台词与个性差异，不同角色的说话方式必须可区分。
 6. 每一段都要有存在理由：推进情节、塑造人物或埋设伏笔，三者至少占其一。
+7. 具体优先于概括：写动作、器物、体感，不写情绪名词。禁止给情绪命名后草草了事。
+8. 每一句话都必须是这一场独有的。换到别的作品里也成立的句子，就是废句。
 """
 
     fun outlineSystem(genre: String, targetWords: Long) = """
@@ -52,8 +56,13 @@ object Prompts {
 细纲要具体到可以被直接扩写成 3000 字正文，禁止空话。
 """.trim()
 
-    fun chapterWriteSystem(styleBlock: String, contextBlock: String) = buildString {
+    fun chapterWriteSystem(styleBlock: String, contextBlock: String, corpusBlock: String = "") = buildString {
         appendLine(WRITING_CONSTITUTION)
+        // 语料库紧跟宪法：它是「怎么写」层，比文风 DNA 更需要被放在前排
+        if (corpusBlock.isNotBlank()) {
+            appendLine()
+            appendLine(corpusBlock)
+        }
         if (styleBlock.isNotBlank()) {
             appendLine()
             appendLine(styleBlock)
@@ -276,9 +285,18 @@ class AgentPipeline(
         previousHandoff: String,
         targetWords: Int,
         requirements: String = "",
+        /** 作品题材，用于挑选贴合的具体化词条；空表示通用 */
+        genre: String = "",
+        /** 关闭时只注入 AI 腔禁忌清单，不注入选词样例与拆书参照 */
+        includeCorpus: Boolean = true,
     ): AgentResult<String> {
+        val corpusBlock = if (includeCorpus) {
+            CorpusEngine.writingBlock(genre = genre)
+        } else {
+            CorpusEngine.writingBlock(genre = genre, includeDeconstruct = false)
+        }
         val resp = call(
-            system = Prompts.chapterWriteSystem(styleBlock, contextBlock),
+            system = Prompts.chapterWriteSystem(styleBlock, contextBlock, corpusBlock),
             user = Prompts.chapterWriteUser(
                 projectTitle, chapterOrder, chapterTitle, outline,
                 previousHandoff, targetWords, requirements,
@@ -300,9 +318,13 @@ class AgentPipeline(
         length: Int,
         styleBlock: String = "",
         contextBlock: String = "",
+        genre: String = "",
     ): AgentResult<String> {
         val system = buildString {
             appendLine(Prompts.CONTINUE_SYSTEM)
+            // 续写场景下拆书参照意义不大（结构已经定了），但选词与禁忌清单必须带上
+            val corpus = CorpusEngine.writingBlock(genre = genre, includeDeconstruct = false)
+            if (corpus.isNotBlank()) { appendLine(); appendLine(corpus) }
             if (styleBlock.isNotBlank()) { appendLine(); appendLine(styleBlock) }
             if (contextBlock.isNotBlank()) {
                 appendLine("===== 相关设定 =====")
@@ -337,9 +359,27 @@ class AgentPipeline(
     // Agent 5：润色编辑
     // ------------------------------------------------------------------
 
-    suspend fun polish(text: String, styleBlock: String, instruction: String = ""): AgentResult<String> {
-        val system = if (styleBlock.isBlank()) Prompts.POLISH_SYSTEM
-        else Prompts.POLISH_SYSTEM + "\n\n" + styleBlock
+    suspend fun polish(
+        text: String,
+        styleBlock: String,
+        instruction: String = "",
+        genre: String = "",
+    ): AgentResult<String> {
+        // 润色时给出**这篇实际命中的**套话，而不是无差别糊一长串清单——
+        // 模型看到具体证据才知道要改哪里，看到通用清单只会泛泛重写
+        val report = SlopDetector.detect(text)
+        val corpus = buildString {
+            if (!report.isEmpty) {
+                appendLine(SlopDetector.targetedAdvice(report, maxItems = 8))
+                appendLine()
+            }
+            append(positiveLexicon(genre))
+        }.trim()
+        val system = buildString {
+            append(Prompts.POLISH_SYSTEM)
+            if (corpus.isNotBlank()) { appendLine(); appendLine(); append(corpus) }
+            if (styleBlock.isNotBlank()) { appendLine(); appendLine(styleBlock) }
+        }
         val resp = call(
             system = system,
             user = "【待润色正文】\n$text" + if (instruction.isBlank()) "" else "\n\n【额外要求】$instruction",
@@ -420,6 +460,10 @@ class AgentPipeline(
         )
         return AgentResult(resp.text.trim(), resp.engineId, resp.degraded)
     }
+
+    /** 润色/改写时的正向选词参考。不带拆书——改写阶段不需要结构建议。 */
+    private fun positiveLexicon(genre: String): String =
+        CorpusEngine.writingBlock(genre = genre, includeDeconstruct = false)
 
     // ------------------------------------------------------------------
     // 内部
@@ -537,24 +581,17 @@ class AgentPipeline(
         )
     }
 
-    /** 本地启发式 AI 腔检测，作为主编 Agent 的交叉验证（不额外消耗 token）。 */
+    /**
+     * 本地 AI 腔检测，作为主编 Agent 的交叉验证（不额外消耗 token）。
+     *
+     * 委托给 [SlopDetector] 的词库 + 句式两层检测，并叠加**具体度**维度。
+     * 早先这里只有 15 个硬编码词，抓不到句式模板（「不是…而是…」），
+     * 也完全无法识别「一处套话都没有、但什么具体信息都没说」的段落——
+     * 而那恰恰是 AI 文本最常见的形态。
+     */
     private fun guessAiFlavor(text: String): Int {
-        val cliches = listOf(
-            "总之", "值得一提的是", "仿佛整个世界", "不禁", "不由自主地", "深深地",
-            "心中五味杂陈", "如同一道闪电", "眼神中闪过一丝", "空气仿佛凝固",
-            "这一刻", "与此同时", "然而", "无尽的", "淡淡的",
-        )
-        if (text.length < 200) return 0
-        val hits = cliches.sumOf { c -> countOccurrences(text, c) }
-        val per1k = hits * 1000.0 / text.length
-        return (per1k / 2.0 * 100).toInt().coerceIn(0, 100)
-    }
-
-    private fun countOccurrences(text: String, sub: String): Int {
-        var count = 0
-        var idx = text.indexOf(sub)
-        while (idx >= 0) { count++; idx = text.indexOf(sub, idx + sub.length) }
-        return count
+        if (text.length < 60) return 0
+        return SlopDetector.detect(text).riskLevel
     }
 
     private fun parseOutline(raw: String, volumeCount: Int, chaptersPerVolume: Int): List<OutlineVolume> {

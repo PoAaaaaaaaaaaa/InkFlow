@@ -3,6 +3,7 @@ package com.inkflow.core.quality
 import com.inkflow.core.domain.Chapter
 import com.inkflow.core.domain.Character
 import com.inkflow.core.domain.Foreshadow
+import com.inkflow.core.corpus.CorpusEngine
 import com.inkflow.core.domain.ForeshadowStatus
 import com.inkflow.core.style.StyleAnalyzer
 import com.inkflow.core.style.StyleDna
@@ -25,6 +26,8 @@ object QualityEvaluator {
         foreshadows: List<Foreshadow> = emptyList(),
         styleDna: StyleDna? = null,
         recentTexts: List<String> = emptyList(),
+        /** 作品题材，用于 AI 腔维度挑选贴合的具体化词条 */
+        genre: String = "",
     ): QualityReport {
         val text = chapter.content
         val coherence = coherence(text, characters)
@@ -32,9 +35,11 @@ object QualityEvaluator {
         val style = styleMatch(text, styleDna)
         val foreshadow = foreshadowCheck(foreshadows, chapter.order)
         val continuity = continuity(text, recentTexts)
+        val aiFlavor = aiFlavor(text, genre)
 
-        val issues = coherence.issues + fluency.issues + style.issues + foreshadow.issues + continuity.issues
-        val score = weightedScore(coherence, fluency, style, continuity)
+        val issues = coherence.issues + fluency.issues + style.issues +
+            foreshadow.issues + continuity.issues + aiFlavor.issues
+        val score = weightedScore(coherence, fluency, style, continuity, aiFlavor)
 
         return QualityReport(
             chapterId = chapter.id,
@@ -44,12 +49,62 @@ object QualityEvaluator {
             fluency = fluency,
             style = style,
             continuity = continuity,
+            aiFlavor = aiFlavor,
             foreshadow = foreshadow,
+            aiFlavorRisk = aiFlavorRiskOf(text, genre),
             issues = issues.sortedByDescending { it.severity },
             wordCount = Chapter.countWords(text),
             generatedAt = System.currentTimeMillis(),
         )
     }
+
+    // ------------------------------------------------------------------
+    // AI 腔：词层 + 句式层 + 具体度
+    // ------------------------------------------------------------------
+
+    /**
+     * AI 腔维度评分。
+     *
+     * 与其他四个维度不同，这一维**不看语义**，只看文本表面：
+     * 用了哪些套话、套话密度多高、具体信息密度多低。
+     * 它回答的是「这段读起来像不像人写的」，而不是「这段写得好不好」。
+     *
+     * 之所以要单独成维：AI 腔是一种**独立于其他所有维度**的失败模式。
+     * 一段情节连贯、标点规范、句式也符合文风的文字，照样可以是彻底的 AI 腔——
+     * 因为它每一句都正确，却没有一句是具体的。
+     */
+    fun aiFlavor(text: String, genre: String = ""): DimensionScore {
+        if (text.length < 60) {
+            return DimensionScore(-1.0, "文本过短，无法评估", emptyList())
+        }
+        val audit = CorpusEngine.audit(text, genre)
+        val risk = audit.aiFlavorScore
+        // 风险越高分越低：这一维是「反向指标」
+        val score = (100 - risk).toDouble()
+
+        val issues = mutableListOf<QualityIssue>()
+        if (risk >= 25) {
+            val severe = audit.slop.severeHits
+            val evidence = severe.take(5).joinToString("、") { it.phrase }
+            issues += QualityIssue(
+                IssueType.AiFlavor,
+                severity = when {
+                    risk >= 65 -> 3
+                    risk >= 40 -> 2
+                    else -> 1
+                },
+                message = "AI 腔风险 $risk 分" +
+                    if (evidence.isNotBlank()) "，命中「$evidence」等 ${audit.slop.hits.size} 处套话" else "",
+                suggestion = "具体度 ${audit.concreteness.score} 分。${audit.concreteness.note}；" +
+                    "优先改标红的套话——它们不是用词问题，是信息缺失，要替换成具体的动作或器物",
+            )
+        }
+        return DimensionScore(score, "AI 腔风险 $risk", issues)
+    }
+
+    /** 单独取风险值，供报告直接展示（与 [aiFlavor] 的分数互为反向）。 */
+    private fun aiFlavorRiskOf(text: String, genre: String): Int =
+        if (text.length < 60) -1 else CorpusEngine.audit(text, genre).aiFlavorScore
 
     // ------------------------------------------------------------------
     // Coherence：情节逻辑一致性
@@ -413,13 +468,20 @@ object QualityEvaluator {
         fluency: DimensionScore,
         style: DimensionScore,
         continuity: DimensionScore,
+        aiFlavor: DimensionScore = DimensionScore(-1.0, "", emptyList()),
     ): Int {
-        // 缺失维度（-1）不参与加权，避免「没建立文风 DNA」被无端扣分
+        // 缺失维度（-1）不参与加权，避免「没建立文风 DNA」被无端扣分。
+        //
+        // AI 腔权重 0.20 是追加的，原有四项的相对比例保持不变（0.30/0.30/0.20/0.20），
+        // 因此这一维实际占总分的 0.20/1.20 ≈ 17%。给这个量级是因为：
+        // 对本书的目标用户（长篇网文作者）而言，「读起来像 AI 写的」是致命伤，
+        // 但不该压过连贯性与流畅度这两个更基础的质量维度。
         val parts = listOf(
             coherence.value to 0.30,
             fluency.value to 0.30,
             style.value to 0.20,
             continuity.value to 0.20,
+            aiFlavor.value to 0.20,
         ).filter { it.first >= 0 }
         if (parts.isEmpty()) return -1
         val wSum = parts.sumOf { it.second }
@@ -494,10 +556,14 @@ data class QualityReport(
     val fluency: DimensionScore,
     val style: DimensionScore,
     val continuity: DimensionScore,
+    /** AI 腔维度：值越高越干净。与 [aiFlavorRisk] 互为反向，-1 表示样本不足。 */
+    val aiFlavor: DimensionScore = DimensionScore(-1.0, "", emptyList()),
     val foreshadow: ForeshadowReport,
     val issues: List<QualityIssue>,
     val wordCount: Int,
     val generatedAt: Long,
+    /** AI 腔风险 0..100，越高越像 AI 写的；-1 表示样本不足未判定 */
+    val aiFlavorRisk: Int = -1,
 ) {
     val blockingIssues: List<QualityIssue> get() = issues.filter { it.severity >= 3 }
 
