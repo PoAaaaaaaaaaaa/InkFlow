@@ -1,0 +1,144 @@
+import java.util.Properties
+
+plugins {
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.ksp)
+}
+
+/**
+ * 签名配置。
+ *
+ * 云构建（GitHub Actions）里由 secrets 注入；本地开发若没有签名文件则
+ * 退化为 debug 签名，保证 `assembleDebug` 在任何环境都能跑通。
+ */
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
+}
+val hasReleaseSigning = keystoreProps.getProperty("storeFile")?.let { file(it).exists() } == true
+
+android {
+    namespace = "com.inkflow.app"
+    compileSdk = 37
+
+    defaultConfig {
+        applicationId = "com.inkflow.app"
+        minSdk = 26
+        targetSdk = 37
+        versionCode = 1
+        versionName = "1.0.0"
+
+        vectorDrawables.useSupportLibrary = true
+        resourceConfigurations += listOf("zh", "en")
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(keystoreProps.getProperty("storeFile"))
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            applicationIdSuffix = ".debug"
+            isMinifyEnabled = false
+        }
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+            signingConfig = if (hasReleaseSigning) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlin {
+        compilerOptions {
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+        }
+    }
+
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
+
+    packaging {
+        resources {
+            excludes += setOf(
+                "/META-INF/{AL2.0,LGPL2.1}",
+                "/META-INF/DEPENDENCIES",
+                "/META-INF/INDEX.LIST",
+            )
+        }
+    }
+
+    lint {
+        abortOnError = false
+        checkReleaseBuilds = false
+    }
+}
+
+dependencies {
+    implementation(project(":core"))
+
+    // ---- Compose UI 层 ----
+    implementation(platform(libs.compose.bom))
+    implementation(libs.compose.ui)
+    implementation(libs.compose.ui.graphics)
+    implementation(libs.compose.foundation)
+    implementation(libs.compose.material3)
+    implementation(libs.compose.material.icons.extended)
+    implementation(libs.compose.ui.tooling.preview)
+    debugImplementation(libs.compose.ui.tooling)
+
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.navigation.compose)
+    implementation(libs.androidx.documentfile)
+
+    // ---- 数据层：Room + DataStore ----
+    implementation(libs.room.runtime)
+    implementation(libs.room.ktx)
+    ksp(libs.room.compiler)
+    implementation(libs.datastore.preferences)
+
+    // ---- 网络 / 序列化 / 并发 ----
+    implementation(libs.okhttp)
+    implementation(libs.okhttp.sse)
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.kotlinx.coroutines.android)
+
+    // ---- 端侧 AI：Gemini Nano via ML Kit GenAI（AICore 系统服务）----
+    // 用 compileOnly：设备没有 AICore 时不会因缺少 native 库而崩溃，
+    // 运行时通过反射式软依赖降级到其他引擎。
+    compileOnly(libs.mlkit.genai.prompt)
+
+    // ---- 端侧 AI：LiteRT-LM 本地大模型（GPU/NPU 加速，支持自导入 .litertlm）----
+    implementation(libs.litertlm.android)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlin.test)
+    testImplementation(libs.kotlinx.coroutines.test)
+}

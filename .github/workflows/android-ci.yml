@@ -1,0 +1,210 @@
+name: Android CI — 构建与验证
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: '构建类型'
+        required: true
+        default: 'both'
+        type: choice
+        options: [ both, debug, release ]
+
+permissions:
+  contents: write
+
+env:
+  # AGP 9 的新 DSL 与 KSP 尚不兼容，需回退经典 DSL（与本地构建保持一致）
+  GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx4g"
+
+jobs:
+  # ------------------------------------------------------------------
+  # 一、核心引擎单元测试（纯 JVM，无需 Android 设备）
+  # ------------------------------------------------------------------
+  test:
+    name: 单元测试（core 引擎）
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+
+      - name: 配置 JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 配置 Gradle 缓存
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle/libs.versions.toml', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: 配置 Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: 安装 SDK 组件
+        run: |
+          sdkmanager --install "platforms;android-37.0" "build-tools;37.0.0" "platform-tools"
+          sdkmanager --licenses > /dev/null 2>&1 || true
+          echo "已安装组件："
+          ls "$ANDROID_HOME/platforms"
+          ls "$ANDROID_HOME/build-tools"
+
+      - name: 运行 core 引擎单元测试
+        run: ./gradlew :core:test --no-daemon --console=plain --stacktrace
+
+      - name: 上传测试报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            core/build/reports/tests/
+            core/build/test-results/
+          if-no-files-found: ignore
+
+  # ------------------------------------------------------------------
+  # 二、构建 APK（aapt2 仅支持 x86_64，必须在云端打包）
+  # ------------------------------------------------------------------
+  build:
+    name: 构建 APK
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 60
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+
+      - name: 配置 JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 配置 Gradle 缓存
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle/libs.versions.toml', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: 配置 Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: 安装 SDK 组件
+        run: |
+          sdkmanager --install "platforms;android-37.0" "build-tools;37.0.0" "platform-tools"
+          sdkmanager --licenses > /dev/null 2>&1 || true
+
+      - name: 写入签名配置
+        id: signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "检测到签名密钥，使用 release 正式签名"
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            cat > keystore.properties <<EOF
+          storeFile=$RUNNER_TEMP/release.jks
+          storePassword=$KEYSTORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
+            echo "has_signing=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "未配置签名密钥，Release 将回退为 debug 签名（仅用于测试安装）"
+            echo "has_signing=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 构建 Debug APK
+        run: ./gradlew :app:assembleDebug --no-daemon --console=plain --stacktrace
+
+      - name: 构建 Release APK（R8 混淆 + 资源压缩）
+        run: ./gradlew :app:assembleRelease --no-daemon --console=plain --stacktrace
+
+      - name: 校验产物
+        run: |
+          set -e
+          echo "===== 产物清单 ====="
+          find app/build/outputs/apk -name "*.apk" -exec ls -lh {} \;
+          echo
+          for f in $(find app/build/outputs/apk -name "*.apk"); do
+            echo "--- $f"
+            "$ANDROID_HOME/build-tools/37.0.0/aapt2" dump badging "$f" 2>/dev/null | head -5 || true
+          done
+
+      - name: 上传 Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: InkFlow-debug-${{ github.run_number }}
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      - name: 上传 Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: InkFlow-release-${{ github.run_number }}
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+
+      - name: 上传构建报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-reports-${{ github.run_number }}
+          path: |
+            app/build/reports/
+            app/build/outputs/logs/
+          if-no-files-found: ignore
+
+  # ------------------------------------------------------------------
+  # 三、发布：打 tag 时自动创建 Release 并附上 APK
+  # ------------------------------------------------------------------
+  release:
+    name: 发布 Release
+    runs-on: ubuntu-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: 下载 Debug APK
+        uses: actions/download-artifact@v4
+        with:
+          name: InkFlow-debug-${{ github.run_number }}
+          path: apk/debug
+
+      - name: 下载 Release APK
+        uses: actions/download-artifact@v4
+        with:
+          name: InkFlow-release-${{ github.run_number }}
+          path: apk/release
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            apk/debug/*.apk
+            apk/release/*.apk
+          generate_release_notes: true
+          body: |
+            ## 墨流 InkFlow ${{ github.ref_name }}
+
+            AI 长篇小说创作应用（Android）。
+
+            - `InkFlow-release-*.apk`：R8 混淆 + 资源压缩，日常安装用这个
+            - `InkFlow-debug-*.apk`：调试版，含完整日志便于排查问题
+
+            安装前请在系统设置中允许「安装未知来源应用」。

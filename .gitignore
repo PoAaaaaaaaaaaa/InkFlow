@@ -1,0 +1,28 @@
+# Gradle
+.gradle/
+build/
+*/build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# 本地配置与密钥（绝不入库）
+local.properties
+keystore.properties
+*.jks
+*.keystore
+secrets.properties
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.kotlin/
+
+# 系统
+.DS_Store
+captures/
+*.hprof
+
+# 端侧模型文件（体积巨大，且属用户私有）
+*.litertlm
+*.gguf
+*.tflite
