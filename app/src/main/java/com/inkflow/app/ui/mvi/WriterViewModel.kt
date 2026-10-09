@@ -338,6 +338,7 @@ class WriterViewModel(
         generationJob = viewModelScope.launch {
             _state.value = _state.value.copy(
                 isGenerating = true, streamingText = "", error = null,
+                pendingKind = PendingKind.Append,
                 generationLabel = "正在生成第${chapter.order}章…",
             )
             try {
@@ -404,6 +405,7 @@ class WriterViewModel(
         generationJob = viewModelScope.launch {
             _state.value = _state.value.copy(
                 isGenerating = true, streamingText = "", error = null,
+                pendingKind = PendingKind.Append,
                 generationLabel = "正在续写…",
             )
             try {
@@ -442,7 +444,9 @@ class WriterViewModel(
 
         generationJob = viewModelScope.launch {
             _state.value = _state.value.copy(
-                isGenerating = true, streamingText = "", error = null, generationLabel = "正在润色…",
+                isGenerating = true, streamingText = "", error = null,
+                pendingKind = PendingKind.Replace,
+                generationLabel = "正在润色…",
             )
             try {
                 val p = ensurePipeline()
@@ -529,16 +533,36 @@ class WriterViewModel(
         }
     }
 
+    /**
+     * 把 AI 产出的新段落追加到已有正文之后。
+     *
+     * 注意这里**必须显式加括号**：曾写成
+     *   `content + if (cond) "" else "\n\n" + text`
+     * Kotlin 会解析为 `content + (if (cond) "" else ("\n\n" + text))`，
+     * 于是当正文为空或以换行结尾时（正是首次生成最常见的情形），
+     * AI 文本会被整体丢弃 —— 表现为点「插入正文」毫无反应。
+     */
+    private fun appendBlock(existing: String, addition: String): String {
+        if (addition.isBlank()) return existing
+        if (existing.isBlank()) return addition
+        val separator = when {
+            existing.endsWith("\n\n") -> ""
+            existing.endsWith("\n") -> "\n"
+            else -> "\n\n"
+        }
+        return existing + separator + addition
+    }
+
     private fun acceptStreaming() {
         val s = _state.value
         val chapter = s.currentChapter ?: return
         if (s.streamingText.isBlank()) return
 
-        val merged = if (s.generationLabel.contains("润色")) {
-            // 润色结果是整篇替换
-            s.streamingText
-        } else {
-            chapter.content + if (chapter.content.isBlank() || chapter.content.endsWith("\n")) "" else "\n\n" + s.streamingText
+        val merged = when {
+            // 润色 / 一致性重写结果：整篇替换
+            s.pendingKind == PendingKind.Replace -> s.streamingText
+            // 续写 / 整章生成：追加到正文末尾
+            else -> appendBlock(chapter.content, s.streamingText)
         }
         val updated = chapter.copy(content = merged, wordCount = Chapter.countWords(merged))
         _state.value = s.copy(

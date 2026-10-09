@@ -56,12 +56,35 @@ private val InkLight = lightColorScheme(
     onSurfaceVariant = Color(0xFF4A4741),
 )
 
-/** 正文排版：中文小说阅读的舒适区。 */
+/**
+ * 默认正文排版（中文小说阅读的舒适区）。
+ * 实际渲染时会由 [com.inkflow.app.data.ReaderPrefs] 覆写字号 / 行高 / 字体。
+ */
 val BodySerif = TextStyle(
     fontFamily = FontFamily.Serif,
     fontSize = 17.sp,
     lineHeight = 32.sp,
     letterSpacing = 0.4.sp,
+)
+
+/**
+ * 依据用户偏好构造正文 TextStyle。
+ *
+ * 行高按「字号 × 倍数」计算而非固定值：用户放大字号时，
+ * 行距若保持固定会显得越来越挤，中文尤其明显。
+ */
+fun bodyTextStyle(prefs: com.inkflow.app.data.ReaderPrefs): TextStyle = TextStyle(
+    fontFamily = when (prefs.fontChoice) {
+        com.inkflow.app.data.ReaderFont.Serif -> FontFamily.Serif
+        com.inkflow.app.data.ReaderFont.Sans -> FontFamily.SansSerif
+        com.inkflow.app.data.ReaderFont.Monospace -> FontFamily.Monospace
+    },
+    fontSize = prefs.fontSizeSp.sp,
+    lineHeight = prefs.lineHeightSp.sp,
+    letterSpacing = 0.4.sp,
+    textIndent = if (prefs.indentFirstLine) androidx.compose.ui.text.style.TextIndent(
+        firstLine = (prefs.fontSizeSp * 2).sp,
+    ) else androidx.compose.ui.text.style.TextIndent.None,
 )
 
 private val InkTypography = Typography(
@@ -95,6 +118,33 @@ fun InkFlowTheme(
         typography = InkTypography,
         content = content,
     )
+}
+
+/**
+ * 阅读区配色。返回 (背景色, 正文色, 次要文字色)。
+ *
+ * 不直接改全局 MaterialTheme，是因为阅读区经常需要与 App 主题不同 ——
+ * 例如暗色 App 里仍想用暖黄底读稿。
+ */
+fun readerColors(
+    scheme: com.inkflow.app.data.ReaderScheme,
+    isDark: Boolean,
+): Triple<Color, Color, Color> = when (scheme) {
+    com.inkflow.app.data.ReaderScheme.FollowSystem ->
+        if (isDark) Triple(Color(0xFF0D1117), Color(0xFFD8DCE3), Color(0xFF8B93A1))
+        else Triple(Color(0xFFFBF8F3), Color(0xFF23262B), Color(0xFF6B7280))
+
+    com.inkflow.app.data.ReaderScheme.Paper ->
+        Triple(Color(0xFFFFFFFF), Color(0xFF1F2226), Color(0xFF707784))
+
+    com.inkflow.app.data.ReaderScheme.Warm ->
+        Triple(Color(0xFFF7EFDD), Color(0xFF3A3226), Color(0xFF7A6E59))
+
+    com.inkflow.app.data.ReaderScheme.Sepia ->
+        Triple(Color(0xFFEDE0C8), Color(0xFF453B2C), Color(0xFF83765E))
+
+    com.inkflow.app.data.ReaderScheme.Night ->
+        Triple(Color(0xFF121417), Color(0xFFB9BFC9), Color(0xFF6E7681))
 }
 
 /** 正文块的行高样式：避免中文字形上下被裁切。 */

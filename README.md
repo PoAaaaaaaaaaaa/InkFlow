@@ -368,6 +368,18 @@ echo "sdk.dir=$ANDROID_HOME" > local.properties
 
 ---
 
+## v1.2.0 修复（重要）
+
+- **「插入正文」点了没反应** —— 修掉一个隐蔽的 Kotlin 表达式优先级 bug
+  （`a + if (c) "" else "\n\n" + b` 被解析为 `a + (if (c) "" else ("\n\n" + b))`，
+  导致空章节或以换行结尾时 AI 文本被整体丢弃，而「空章节」正是首次生成最常见的情形）
+- **封面无法保存** —— 修掉 `BitmapFactory.decodeStream` 在 `inJustDecodeBounds=true` 时
+  **按设计返回 null** 却被当成失败信号的错误判空；顺带加入 EXIF 方向校正
+  （竖拍照片不再躺倒）与失败重试
+- **新增阅读设置** —— 正文区可实时调整：字号、行距、段间距、左右留白、
+  字体（衬线/黑体/等宽）、5 种页面配色（跟随系统/纸白/暖黄/米褐/夜间）、
+  段首缩进、写作时屏幕常亮
+
 ## v1.1.0 新增
 
 - **作品管理**：删除（二次确认列出章节数与字数）／归档／封面（相册选图，无需存储权限，自动裁 3:4）
@@ -392,7 +404,7 @@ echo "sdk.dir=$ANDROID_HOME" > local.properties
 
 | 验证项 | 结果 |
 |---|---|
-| core 单元测试 | ✅ 69/69 通过（本地 + GitHub Actions 双跑通） |
+| core 单元测试 | ✅ 84/84 通过（含 15 个针对上述两个 bug 的回归测试） |
 | Kotlin 编译 + KSP（Room） | ✅ 通过（aarch64 本机） |
 | Debug APK 构建 | ✅ 通过（GitHub Actions） |
 | Release APK 构建（R8 + 资源压缩） | ✅ 通过（GitHub Actions） |

@@ -5,12 +5,15 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import kotlinx.coroutines.launch
 import com.inkflow.app.ui.MemoryScreen
 import com.inkflow.app.ui.NovelListScreen
 import com.inkflow.app.ui.SettingsScreen
@@ -64,6 +67,9 @@ private fun InkFlowNavHost(app: InkFlowApp) {
             val chapterId = entry.arguments?.getString("chapterId").orEmpty().ifBlank { null }
 
             val vm: WriterViewModel = viewModel(factory = WriterViewModel.factory(app))
+            val readerPrefs by app.settingsStore.readerPrefs.collectAsState(
+                initial = com.inkflow.app.data.ReaderPrefs()
+            )
             WriterScreen(
                 viewModel = vm,
                 projectId = projectId,
@@ -75,6 +81,10 @@ private fun InkFlowNavHost(app: InkFlowApp) {
                 },
                 onOpenMemory = {
                     navController.navigate(Routes.memory(projectId, vm.state.value.projectTitle))
+                },
+                readerPrefs = readerPrefs,
+                onReaderPrefsChange = { updated ->
+                    app.appScope.launch { app.settingsStore.saveReaderPrefs(updated) }
                 },
             )
         }

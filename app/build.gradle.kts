@@ -28,8 +28,8 @@ android {
         applicationId = "com.inkflow.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
 
         vectorDrawables.useSupportLibrary = true
         resourceConfigurations += listOf("zh", "en")
@@ -127,6 +127,7 @@ dependencies {
 
     // ---- 封面图加载 ----
     implementation(libs.coil.compose)
+    implementation(libs.androidx.exifinterface)
     implementation(libs.coil.network.okhttp)
 
     // ---- 数据层：Room + DataStore ----

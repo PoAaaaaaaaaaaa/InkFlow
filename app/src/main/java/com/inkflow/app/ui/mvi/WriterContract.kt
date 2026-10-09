@@ -36,6 +36,14 @@ data class WriterUiState(
     val isGenerating: Boolean = false,
     val generationLabel: String = "",
 
+    /**
+     * 待确认产出的处理方式。
+     *
+     * 用枚举显式表达，而不是靠 label 里是否含「润色」这种字符串判断 ——
+     * 后者一旦文案改动就会静默改变合并语义，属于典型的隐藏耦合。
+     */
+    val pendingKind: PendingKind = PendingKind.Append,
+
     val outline: String = "",
     val handoffNote: String = "",
 
@@ -64,6 +72,14 @@ data class WriterUiState(
     val canGenerate: Boolean get() = !isGenerating && currentChapter != null
     val targetWords: Int get() = currentChapter?.let { it.wordCount } ?: 0
 }
+
+/**
+ * 待确认 AI 产出的合并方式。
+ *
+ * - [Append]：续写 / 整章生成 → 追加到正文末尾
+ * - [Replace]：润色 / 重写 → 整篇替换
+ */
+enum class PendingKind { Append, Replace }
 
 /** 正文渲染块：段落级切片，LazyColumn 的最小复用单元。 */
 data class TextBlock(

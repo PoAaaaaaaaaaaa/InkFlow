@@ -382,50 +382,145 @@ class NovelRepository(
         uri: android.net.Uri,
         maxSize: Int = 1080,
     ): String = withContext(Dispatchers.IO) {
-        val target = coverFile(projectId, "jpg")
+        // 每次换封面先把旧文件删掉，避免旧图残留占用空间
+        coverFile(projectId, "jpg").takeIf { it.exists() }?.delete()
 
-        // 第一步：只读图片头部拿尺寸（inJustDecodeBounds 不会真正解码像素）
-        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        context.contentResolver.openInputStream(uri)?.use { stream ->
-            android.graphics.BitmapFactory.decodeStream(stream, null, bounds)
-        } ?: throw java.io.IOException("无法读取所选图片")
-
+        val bounds = decodeBounds(context, uri)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
-            throw java.io.IOException("所选文件不是有效图片")
+            throw java.io.IOException("所选文件不是有效图片（无法解析尺寸）")
         }
 
-        // 第二步：算下采样比。目标是长边不超过 maxSize 的 2 倍，留出裁剪余量。
+        // 下采样：目标长边不超过 maxSize 的 2 倍，留出裁剪余量
         var sample = 1
         while (bounds.outWidth / sample > maxSize * 2 || bounds.outHeight / sample > maxSize * 2) {
             sample *= 2
         }
 
-        // 第三步：重新打开流做真正的解码（InputStream 只能消费一次，必须重新获取）
-        val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
-        val bitmap = context.contentResolver.openInputStream(uri)?.use { stream ->
-            android.graphics.BitmapFactory.decodeStream(stream, null, opts)
-        } ?: throw java.io.IOException("无法解码所选图片")
+        val bitmap = decodeBitmap(context, uri, sample)
+            ?: throw java.io.IOException("图片解码失败，请换一张图片试试")
+
+        // 先按 EXIF 摆正方向，再裁剪，避免竖拍照片显示成横的
+        val oriented = applyExifOrientation(context, uri, bitmap)
 
         val cropped = try {
-            centerCrop(bitmap, 3, 4)
+            centerCrop(oriented, 3, 4)
         } finally {
-            // centerCrop 可能返回原对象（无需裁剪时），所以用 identity 判断
+            if (oriented !== bitmap && !oriented.isRecycled) oriented.recycle()
             if (!bitmap.isRecycled) bitmap.recycle()
         }
 
+        val target = coverFile(projectId, "jpg")
         try {
             java.io.FileOutputStream(target).use { out ->
-                cropped.compress(android.graphics.Bitmap.CompressFormat.JPEG, 88, out)
+                if (!cropped.compress(android.graphics.Bitmap.CompressFormat.JPEG, 88, out)) {
+                    throw java.io.IOException("图片写入失败")
+                }
             }
         } finally {
             if (!cropped.isRecycled) cropped.recycle()
+        }
+
+        if (!target.exists() || target.length() == 0L) {
+            throw java.io.IOException("封面文件保存后为空")
         }
 
         updateCover(projectId, target.absolutePath)
         target.absolutePath
     }
 
-    /** 按目标宽高比居中裁剪。 */
+    /**
+     * 只读图片头部拿尺寸。
+     *
+     * 【关键】`BitmapFactory.decodeStream` 在 `inJustDecodeBounds = true` 时
+     * **按设计返回 null**（它只填 outWidth/outHeight，不产出 Bitmap）。
+     * 因此这里绝不能对返回值做 `?: throw` 判空 —— 那会让每一次选图都失败，
+     * 表现为「封面无法保存」。真正的失败信号是 outWidth/outHeight <= 0。
+     */
+    private fun decodeBounds(
+        context: android.content.Context,
+        uri: android.net.Uri,
+    ): android.graphics.BitmapFactory.Options {
+        val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        try {
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                android.graphics.BitmapFactory.decodeStream(stream, null, opts)
+            } ?: throw java.io.IOException("无法打开所选图片")
+        } catch (e: java.io.FileNotFoundException) {
+            throw java.io.IOException("找不到所选图片，可能已被移动或删除", e)
+        } catch (e: SecurityException) {
+            throw java.io.IOException("没有读取该图片的权限，请重新选择", e)
+        }
+        return opts
+    }
+
+    /** 按采样率真正解码像素。InputStream 只能消费一次，故每次都重新打开。 */
+    private fun decodeBitmap(
+        context: android.content.Context,
+        uri: android.net.Uri,
+        sampleSize: Int,
+    ): android.graphics.Bitmap? {
+        val opts = android.graphics.BitmapFactory.Options().apply {
+            inSampleSize = sampleSize.coerceAtLeast(1)
+            inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888
+        }
+        // 个别设备/Provider 对同一 URI 二次打开会失败，做一次重试
+        repeat(2) { attempt ->
+            try {
+                context.contentResolver.openInputStream(uri)?.use { stream ->
+                    android.graphics.BitmapFactory.decodeStream(stream, null, opts)?.let { return it }
+                }
+            } catch (t: Throwable) {
+                if (attempt == 1) throw java.io.IOException("读取图片失败：${t.message}", t)
+            }
+        }
+        return null
+    }
+
+    /**
+     * 依据 EXIF 旋转信息摆正 Bitmap。
+     *
+     * 手机竖拍的照片像素本身常是横的，只靠 EXIF 标记方向；
+     * 不处理会导致封面显示成躺倒的。
+     */
+    private fun applyExifOrientation(
+        context: android.content.Context,
+        uri: android.net.Uri,
+        bitmap: android.graphics.Bitmap,
+    ): android.graphics.Bitmap {
+        val orientation = try {
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                androidx.exifinterface.media.ExifInterface(stream).getAttributeInt(
+                    androidx.exifinterface.media.ExifInterface.TAG_ORIENTATION,
+                    androidx.exifinterface.media.ExifInterface.ORIENTATION_NORMAL,
+                )
+            } ?: return bitmap
+        } catch (t: Throwable) {
+            return bitmap
+        }
+
+        val matrix = android.graphics.Matrix()
+        when (orientation) {
+            androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+            androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+            androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+            androidx.exifinterface.media.ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.postScale(-1f, 1f)
+            androidx.exifinterface.media.ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.postScale(1f, -1f)
+            else -> return bitmap
+        }
+        return try {
+            android.graphics.Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+        } catch (t: Throwable) {
+            bitmap
+        }
+    }
+
+    /**
+     * 按目标宽高比居中裁剪，始终返回**新的** Bitmap。
+     *
+     * 不做「参数等于原图尺寸时直接返回 src」的优化：那样调用方 recycle 时
+     * 会把原图一并销毁（或反过来，原图被销毁后返回的对象已失效）。
+     * 一张 1080px 的封面多一次拷贝，代价远小于生命周期 bug。
+     */
     private fun centerCrop(
         src: android.graphics.Bitmap,
         ratioW: Int,
@@ -438,15 +533,15 @@ class NovelRepository(
         } else {
             src.width to (src.width / targetRatio).toInt()
         }
-        val x = ((src.width - cw) / 2).coerceAtLeast(0)
-        val y = ((src.height - ch) / 2).coerceAtLeast(0)
-        // createBitmap 在参数等于原图尺寸时可能直接返回 src 本身，
-        // 那样调用方 recycle 后会把原图也销毁。这里始终复制一份，语义清晰。
-        return android.graphics.Bitmap.createBitmap(
-            src, x, y, cw.coerceAtMost(src.width - x), ch.coerceAtMost(src.height - y),
-        ).let { result ->
-            if (result === src) src.copy(src.config ?: android.graphics.Bitmap.Config.ARGB_8888, false) else result
+        val safeW = cw.coerceIn(1, src.width)
+        val safeH = ch.coerceIn(1, src.height)
+        val x = ((src.width - safeW) / 2).coerceAtLeast(0)
+        val y = ((src.height - safeH) / 2).coerceAtLeast(0)
+        if (x == 0 && y == 0 && safeW == src.width && safeH == src.height) {
+            // 尺寸无需裁剪，仍复制一份以保证所有权清晰
+            return src.copy(src.config ?: android.graphics.Bitmap.Config.ARGB_8888, false)
         }
+        return android.graphics.Bitmap.createBitmap(src, x, y, safeW, safeH)
     }
 
     data class DeleteResult(val chapters: Int, val words: Int)

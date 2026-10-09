@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.FormatSize
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.AlertDialog
@@ -87,6 +88,8 @@ import com.inkflow.app.ui.mvi.WriterEffect
 import com.inkflow.app.ui.mvi.WriterIntent
 import com.inkflow.app.ui.mvi.WriterViewModel
 import com.inkflow.app.ui.theme.BodySerif
+import com.inkflow.app.ui.theme.bodyTextStyle
+import com.inkflow.app.ui.theme.readerColors
 import com.inkflow.core.domain.ChapterStatus
 import kotlinx.coroutines.launch
 
@@ -109,6 +112,8 @@ fun WriterScreen(
     onBack: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenMemory: () -> Unit = {},
+    readerPrefs: com.inkflow.app.data.ReaderPrefs = com.inkflow.app.data.ReaderPrefs(),
+    onReaderPrefsChange: (com.inkflow.app.data.ReaderPrefs) -> Unit = {},
 ) {
     val state by viewModel.state.collectAsState()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
@@ -117,6 +122,7 @@ fun WriterScreen(
     val listState = rememberLazyListState()
 
     var showAiPanel by remember { mutableStateOf(false) }
+    var showReaderSettings by remember { mutableStateOf(false) }
     var showChapterList by remember { mutableStateOf(false) }
     var showContinueDialog by remember { mutableStateOf(false) }
 
@@ -256,8 +262,10 @@ fun WriterScreen(
                 EditorBody(
                     state = state,
                     listState = listState,
+                    prefs = readerPrefs,
                     modifier = Modifier.weight(1f),
                     onContentChange = { viewModel.onIntent(WriterIntent.EditContent(it)) },
+                    onOpenReaderSettings = { showReaderSettings = true },
                 )
 
                 if (showAiPanel) {
@@ -271,6 +279,14 @@ fun WriterScreen(
                 }
             }
         }
+    }
+
+    if (showReaderSettings) {
+        ReaderSettingsSheet(
+            prefs = readerPrefs,
+            onChange = onReaderPrefsChange,
+            onDismiss = { showReaderSettings = false },
+        )
     }
 
     if (showContinueDialog) {
@@ -343,33 +359,55 @@ private fun GenerationBar(label: String, onCancel: () -> Unit) {
 private fun EditorBody(
     state: com.inkflow.app.ui.mvi.WriterUiState,
     listState: androidx.compose.foundation.lazy.LazyListState,
+    prefs: com.inkflow.app.data.ReaderPrefs,
     modifier: Modifier = Modifier,
     onContentChange: (String) -> Unit,
+    onOpenReaderSettings: () -> Unit,
 ) {
     var editing by remember { mutableStateOf(false) }
+    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
+    val (bg, fg, dim) = readerColors(prefs.colorScheme, isDark)
+    val textStyle = bodyTextStyle(prefs).copy(color = fg)
 
-    Column(modifier) {
+    Column(modifier.background(bg)) {
+        // ---------------- 工具条 ----------------
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 6.dp),
+                .padding(horizontal = 12.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
                 "正文",
                 style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f),
+                color = dim,
             )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                "${state.wordCount} 字",
+                style = MaterialTheme.typography.bodySmall,
+                color = dim,
+            )
+            Spacer(Modifier.weight(1f))
+
+            // 阅读设置入口 —— 字号/行距/字体/配色都在这里调
+            IconButton(onClick = onOpenReaderSettings, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    Icons.Default.FormatSize,
+                    contentDescription = "阅读设置",
+                    tint = fg,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
             FilterChip(
                 selected = editing,
                 onClick = { editing = !editing },
-                label = { Text(if (editing) "编辑中" else "阅读") },
+                label = { Text(if (editing) "编辑中" else "阅读", style = MaterialTheme.typography.bodySmall) },
                 leadingIcon = {
                     Icon(
                         if (editing) Icons.Default.Edit else Icons.Default.Visibility,
                         contentDescription = null,
-                        modifier = Modifier.size(16.dp),
+                        modifier = Modifier.size(14.dp),
                     )
                 },
             )
@@ -381,16 +419,15 @@ private fun EditorBody(
                 onValueChange = onContentChange,
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(horizontal = 20.dp),
-                textStyle = BodySerif.copy(color = MaterialTheme.colorScheme.onBackground),
+                    .padding(horizontal = prefs.horizontalPaddingDp.dp),
+                textStyle = textStyle,
                 cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                 decorationBox = { inner ->
                     Box(Modifier.fillMaxSize()) {
                         if (state.currentChapter?.content.isNullOrEmpty()) {
                             Text(
                                 "在这里开始写，或点右下角让 AI 起草…",
-                                style = BodySerif,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                style = textStyle.copy(color = dim.copy(alpha = 0.6f)),
                             )
                         }
                         inner()
@@ -403,28 +440,37 @@ private fun EditorBody(
                     Text(
                         "本章还没有内容\n点右下角「AI 写作」开始",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = dim,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                     )
                 }
             } else {
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
+                    contentPadding = PaddingValues(
+                        start = prefs.horizontalPaddingDp.dp,
+                        end = prefs.horizontalPaddingDp.dp,
+                        top = 4.dp,
+                        bottom = 8.dp,
+                    ),
                 ) {
                     items(state.contentBlocks, key = { it.index }) { block ->
+                        val spacing = prefs.paragraphSpacingDp.dp
                         Text(
                             text = block.text,
                             style = if (block.isHeading) {
-                                BodySerif.copy(
+                                textStyle.copy(
                                     fontWeight = FontWeight.SemiBold,
-                                    fontSize = 19.sp,
+                                    // 标题比正文略大，但不跟随字号无限放大
+                                    fontSize = (prefs.fontSizeSp * 1.12f).sp,
+                                    textIndent = androidx.compose.ui.text.style.TextIndent.None,
                                 )
                             } else {
-                                BodySerif
+                                textStyle
                             },
-                            color = MaterialTheme.colorScheme.onBackground,
-                            modifier = Modifier.padding(vertical = 6.dp),
+                            color = fg,
+                            modifier = Modifier.padding(vertical = spacing / 2),
                         )
                     }
                     item { Spacer(Modifier.height(120.dp)) }
