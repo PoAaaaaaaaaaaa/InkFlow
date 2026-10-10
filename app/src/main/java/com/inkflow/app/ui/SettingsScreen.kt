@@ -508,49 +508,49 @@ fun SettingsScreen(
             // ---------------- 写作偏好 ----------------
             SectionCard("写作偏好") {
                 Text("单章目标字数：${writing.chapterTargetWords}", style = MaterialTheme.typography.bodyMedium)
-                Slider(
-                    value = writing.chapterTargetWords.toFloat(),
-                    onValueChange = { v ->
-                        scope.launch {
-                            app.settingsStore.saveWritingPrefs(writing.copy(chapterTargetWords = v.toInt()))
-                        }
-                    },
+                PrefSlider(
+                    storedValue = writing.chapterTargetWords.toFloat(),
                     valueRange = 800f..8000f,
                     steps = 17,
+                    onCommit = { v ->
+                        scope.launch {
+                            app.settingsStore.updateWritingPrefs { it.copy(chapterTargetWords = v.toInt()) }
+                        }
+                    },
                 )
 
                 Text(
                     "生成温度：${String.format("%.2f", writing.temperature)}（越高越发散）",
                     style = MaterialTheme.typography.bodyMedium,
                 )
-                Slider(
-                    value = writing.temperature,
-                    onValueChange = { v ->
-                        scope.launch { app.settingsStore.saveWritingPrefs(writing.copy(temperature = v)) }
-                    },
+                PrefSlider(
+                    storedValue = writing.temperature,
                     valueRange = 0.1f..1.4f,
+                    onCommit = { v ->
+                        scope.launch { app.settingsStore.updateWritingPrefs { it.copy(temperature = v) } }
+                    },
                 )
 
                 Text(
                     "质量门禁线：${writing.qualityGateScore} 分（低于此分不允许定稿）",
                     style = MaterialTheme.typography.bodyMedium,
                 )
-                Slider(
-                    value = writing.qualityGateScore.toFloat(),
-                    onValueChange = { v ->
-                        scope.launch {
-                            app.settingsStore.saveWritingPrefs(writing.copy(qualityGateScore = v.toInt()))
-                        }
-                    },
+                PrefSlider(
+                    storedValue = writing.qualityGateScore.toFloat(),
                     valueRange = 50f..95f,
                     steps = 8,
+                    onCommit = { v ->
+                        scope.launch {
+                            app.settingsStore.updateWritingPrefs { it.copy(qualityGateScore = v.toInt()) }
+                        }
+                    },
                 )
 
                 ToggleRow("保存时自动质检", writing.autoQualityCheck) { v ->
-                    scope.launch { app.settingsStore.saveWritingPrefs(writing.copy(autoQualityCheck = v)) }
+                    scope.launch { app.settingsStore.updateWritingPrefs { it.copy(autoQualityCheck = v) } }
                 }
                 ToggleRow("章节完成后自动生成交接笔记", writing.autoHandoff) { v ->
-                    scope.launch { app.settingsStore.saveWritingPrefs(writing.copy(autoHandoff = v)) }
+                    scope.launch { app.settingsStore.updateWritingPrefs { it.copy(autoHandoff = v) } }
                 }
             }
 
@@ -587,14 +587,14 @@ fun SettingsScreen(
                 Text(depth.tier.blurb, style = MaterialTheme.typography.bodySmall)
                 Spacer(Modifier.height(8.dp))
 
-                Slider(
-                    value = writing.depthLevel.toFloat(),
-                    onValueChange = { v ->
+                PrefSlider(
+                    storedValue = writing.depthLevel.toFloat(),
+                    valueRange = 5f..95f,
+                    onCommit = { v ->
                         scope.launch {
-                            app.settingsStore.saveWritingPrefs(writing.copy(depthLevel = v.toInt()))
+                            app.settingsStore.updateWritingPrefs { it.copy(depthLevel = v.toInt()) }
                         }
                     },
-                    valueRange = 5f..95f,
                 )
 
                 // 具名档快捷跳转：数值滑块给精细控制，档位按钮给「我知道自己要什么」
@@ -604,7 +604,7 @@ fun SettingsScreen(
                             selected = depth.tier == tier,
                             onClick = {
                                 scope.launch {
-                                    app.settingsStore.saveWritingPrefs(writing.copy(depthLevel = tier.level))
+                                    app.settingsStore.updateWritingPrefs { it.copy(depthLevel = tier.level) }
                                 }
                             },
                             label = { Text(tier.label, style = MaterialTheme.typography.bodySmall) },
@@ -618,7 +618,7 @@ fun SettingsScreen(
                             selected = depth.tier == tier,
                             onClick = {
                                 scope.launch {
-                                    app.settingsStore.saveWritingPrefs(writing.copy(depthLevel = tier.level))
+                                    app.settingsStore.updateWritingPrefs { it.copy(depthLevel = tier.level) }
                                 }
                             },
                             label = { Text(tier.label, style = MaterialTheme.typography.bodySmall) },
@@ -640,7 +640,7 @@ fun SettingsScreen(
                 Spacer(Modifier.height(10.dp))
 
                 ToggleRow("类比讲解（通俗向）", writing.depthAnalogies) { v ->
-                    scope.launch { app.settingsStore.saveWritingPrefs(writing.copy(depthAnalogies = v)) }
+                    scope.launch { app.settingsStore.updateWritingPrefs { it.copy(depthAnalogies = v) } }
                 }
                 Text(
                     "开启后，出现设定或专业概念时 AI 会当场用生活化的方式解释一遍，" +
@@ -651,7 +651,7 @@ fun SettingsScreen(
                 Spacer(Modifier.height(8.dp))
 
                 ToggleRow("允许留白（深度向）", writing.depthAmbiguity) { v ->
-                    scope.launch { app.settingsStore.saveWritingPrefs(writing.copy(depthAmbiguity = v)) }
+                    scope.launch { app.settingsStore.updateWritingPrefs { it.copy(depthAmbiguity = v) } }
                 }
                 Text(
                     "开启后 AI 可以不把话说完：动机不写明、结局不给答案。对追求即时满足的读者是伤害，默认关闭。",
@@ -674,7 +674,7 @@ fun SettingsScreen(
                 FilterChip(
                     selected = writing.voiceProfileName.isBlank(),
                     onClick = {
-                        scope.launch { app.settingsStore.saveWritingPrefs(writing.copy(voiceProfileName = "")) }
+                        scope.launch { app.settingsStore.updateWritingPrefs { it.copy(voiceProfileName = "") } }
                     },
                     label = { Text("自动匹配", style = MaterialTheme.typography.bodySmall) },
                 )
@@ -688,9 +688,9 @@ fun SettingsScreen(
                             .padding(vertical = 3.dp)
                             .clickable {
                                 scope.launch {
-                                    app.settingsStore.saveWritingPrefs(
-                                        writing.copy(voiceProfileName = if (selected) "" else v.name)
-                                    )
+                                    app.settingsStore.updateWritingPrefs {
+                                        it.copy(voiceProfileName = if (selected) "" else v.name)
+                                    }
                                 }
                             },
                         colors = CardDefaults.cardColors(
@@ -837,6 +837,39 @@ fun SettingsScreen(
             },
         )
     }
+}
+
+/**
+ * 偏好滑块。
+ *
+ * 【为什么不能直接把 value 绑到 DataStore 的值上】
+ * 这是「写作深度设置点击无效果」的真正手感来源：
+ * 每次 onValueChange 都发起一次异步写，而显示值要等 DataStore 回传才更新。
+ * 手指还在拖，UI 用的是上一帧的旧值——滑块被反复弹回，看起来就是「拖不动」。
+ *
+ * 正确做法是把滑块和持久化解耦：
+ *  - 拖动期间只用本地 draft，UI 立刻跟手；
+ *  - 松手（onValueChangeFinished）才落盘一次。
+ *
+ * 副作用是写入次数从「每帧一次」降到「一次拖动一次」，对 DataStore 也友好得多。
+ */
+@Composable
+private fun PrefSlider(
+    storedValue: Float,
+    valueRange: ClosedFloatingPointRange<Float>,
+    steps: Int = 0,
+    onCommit: (Float) -> Unit,
+) {
+    // 用 storedValue 作 key：外部值变化（例如档位按钮跳转）时同步本地状态；
+    // 拖动过程中外部值不变，所以不会打断拖动。
+    var draft by remember(storedValue) { mutableStateOf(storedValue) }
+    Slider(
+        value = draft,
+        onValueChange = { draft = it },
+        onValueChangeFinished = { onCommit(draft) },
+        valueRange = valueRange,
+        steps = steps,
+    )
 }
 
 @Composable

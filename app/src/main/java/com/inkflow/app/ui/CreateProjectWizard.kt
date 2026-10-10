@@ -611,11 +611,20 @@ private fun QuestionCard(
             }
             Spacer(Modifier.height(10.dp))
 
-            when (q.kind) {
-                QuestionKind.Choice, QuestionKind.MultiChoice -> {
+            // 【降级保证】选择题必须真的有选项才渲染选项。
+            //
+            // 曾经出过一个线上问题：AI 出的选择题在界面上只有题干、下面什么都没有。
+            // 根因是选项数组的解析走了「对象数组」通道，字符串数组被判空，
+            // 于是 chunked(2) 得到空列表，一个控件都不渲染。
+            //
+            // 解析层已经修了（JsonLite.stringArrayOf），这里再加一道 UI 防线：
+            // 选项为空就退化成文本输入框。用户至少能作答，
+            // 而不是面对一道点不动的题——**静默失效比报错更糟**。
+            val hasOptions = q.options.isNotEmpty()
+            when {
+                (q.kind == QuestionKind.Choice || q.kind == QuestionKind.MultiChoice) && hasOptions -> {
                     // 选项多时用换行布局，避免横向溢出
-                    val chunks = q.options.chunked(2)
-                    chunks.forEach { row ->
+                    q.options.chunked(2).forEach { row ->
                         Row(
                             Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -634,9 +643,18 @@ private fun QuestionCard(
                         }
                         Spacer(Modifier.height(6.dp))
                     }
+
+                    // 选择题也允许自己填，避免选项覆盖不到的情况
+                    OutlinedTextField(
+                        value = if (answer in q.options) "" else answer,
+                        onValueChange = { if (it.isNotBlank()) onAnswer(q.field, it) },
+                        label = { Text("或自己填写", style = MaterialTheme.typography.bodySmall) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                 }
 
-                QuestionKind.LongText, QuestionKind.Text -> {
+                q.kind == QuestionKind.LongText || q.kind == QuestionKind.Text || !hasOptions -> {
                     OutlinedTextField(
                         value = answer,
                         onValueChange = { onAnswer(q.field, it) },

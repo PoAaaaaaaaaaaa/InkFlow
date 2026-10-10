@@ -234,3 +234,39 @@ data class DepthProfile(
         }
     }
 }
+
+/**
+ * 偏好项的双向映射契约。
+ *
+ * 【为什么需要这个接口】
+ * v1.4.0 出过一个线上 bug：写作深度的四个字段加了数据类属性、
+ * 加了存储 key，但漏了读写映射，值被静默丢弃——表现是「滑块拖完立刻弹回」。
+ * 静默丢数据没有任何报错，最难查。
+ *
+ * 解决办法是把「一个字段在读写两侧都存在」这件事变成**可测试的契约**：
+ * 实现方声明 [fieldNames]，测试遍历这份清单，逐个改值走一遍
+ * 写→读→比对，任何漏接线的字段都会立刻暴露。
+ *
+ * app 层的 `WritingPrefs` 实现此接口，测试在 core 侧跑——
+ * 这样校验不依赖 Android 环境，aarch64 上也能跑（aapt2 限制见 ADR-7）。
+ */
+interface PreferenceMapping {
+    /** 这个偏好类包含的所有字段名。新增字段必须在此登记。 */
+    val fieldNames: List<String>
+}
+
+/**
+ * 写作偏好中与深度相关的字段名。
+ *
+ * 单独抽出来是为了让 core 侧的测试能校验清单完整性——
+ * app 层的 `WritingPrefs` 在 aarch64 上跑不了 unit test
+ * （aapt2 只有 x86_64，见 ADR-7），但字段清单本身的正确性可以在这里守住。
+ */
+object DepthSettingFields {
+    const val LEVEL = "depthLevel"
+    const val ANALOGIES = "depthAnalogies"
+    const val AMBIGUITY = "depthAmbiguity"
+    const val VOICE = "voiceProfileName"
+
+    val ALL = listOf(LEVEL, ANALOGIES, AMBIGUITY, VOICE)
+}

@@ -28,8 +28,8 @@ android {
         applicationId = "com.inkflow.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 5
-        versionName = "1.4.0"
+        versionCode = 6
+        versionName = "1.4.1"
 
         vectorDrawables.useSupportLibrary = true
         resourceConfigurations += listOf("zh", "en")

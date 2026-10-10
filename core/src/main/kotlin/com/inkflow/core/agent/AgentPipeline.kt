@@ -744,7 +744,7 @@ class AgentPipeline(
                     "longtext" -> QuestionKind.LongText
                     else -> QuestionKind.Text
                 },
-                options = JsonLite.arrayOf(obj, "options").mapNotNull { JsonLite.rawString(it) },
+                options = JsonLite.stringArrayOf(obj, "options"),
                 priority = (JsonLite.int(obj, "priority") ?: 2).coerceIn(1, 3),
                 origin = "ai",
             )
@@ -1330,6 +1330,16 @@ internal object JsonLite {
         val start = text.indexOf('[')
         val end = text.lastIndexOf(']')
         if (start < 0 || end <= start) return null
+        // parseArray 现在保留标量元素（为了 options 这类字符串数组），
+        // 这里只挑对象——调用方一律期望对象数组
+        return parseArray(text.substring(start, end + 1)).filterIsInstance<Map<String, Any?>>()
+    }
+
+    /** 与 [extractArray] 对应，但保留全部元素（含标量），供顶层字符串数组使用。 */
+    fun extractRawArray(text: String): List<Any?>? {
+        val start = text.indexOf('[')
+        val end = text.lastIndexOf(']')
+        if (start < 0 || end <= start) return null
         return parseArray(text.substring(start, end + 1))
     }
 
@@ -1365,16 +1375,83 @@ internal object JsonLite {
         }
     }
 
-    private fun parseArray(s: String): List<Map<String, Any?>> {
-        val out = mutableListOf<Map<String, Any?>>()
+    /**
+     * 读取**字符串数组**。
+     *
+     * 【为什么必须与 [arrayOf] 分开】
+     * `arrayOf` 只保留 Map 元素，用于 `[{...},{...}]` 这类对象数组。
+     * 但模型输出的字段里有大量**标量数组**，最典型的就是选择题的选项：
+     *   "options": ["单城", "一界", "多元宇宙"]
+     * 用 `arrayOf` 读它，每个元素都过不了 `as? Map` 的检查，结果是**静默返回空列表**。
+     *
+     * 这个 bug 曾在真实使用中表现为「问题显示出来了，但下面没有可点的选项」——
+     * 因为选项数组为空，UI 端一个控件都渲染不出来。
+     * 静默丢数据比抛异常危险得多，所以这里显式区分两种数组类型。
+     */
+    fun stringArrayOf(map: Map<String, Any?>, key: String): List<String> {
+        val v = map[key] ?: return emptyList()
+        return when (v) {
+            is List<*> -> v.mapNotNull { rawString(it)?.takeIf { s -> s.isNotBlank() } }
+            is String -> if (v.isBlank()) emptyList() else listOf(v)
+            else -> emptyList()
+        }
+    }
+
+    /**
+     * 解析数组，**保留标量元素**。
+     *
+     * 【这里修的是一个真实 bug】
+     * 第一版只收集 `{...}` 对象，遇到标量（字符串/数字）直接跳过。
+     * 于是 `"options": ["单城","一界","多元宇宙"]` 解析出来是**空列表**——
+     * 模型输出的那些选择题，到了界面上就只有题干、下面一片空白。
+     *
+     * 现在标量按 `{"value": 原值}` 包装进结果，与对象元素共存。
+     * 读取端用 [stringArrayOf] 取值，对象数组的读取路径（[arrayOf]）不受影响
+     * ——它只挑 Map 元素，包装后的标量不会被误取。
+     */
+    private fun parseArray(raw: String): List<Any?> {
+        // 先剥掉外层括号。
+        // 【这一步是必须的】否则循环遇到开头的 '[' 会走「嵌套数组」分支，
+        // 拿整串再递归一次 —— 同样的输入、同样的函数，直接栈溢出。
+        val s = raw.trim().removePrefix("[").removeSuffix("]")
+        val out = mutableListOf<Any?>()
         var i = 0
         while (i < s.length) {
-            if (s[i] == '{') {
-                val end = matchBrace(s, i)
-                if (end < 0) break
-                parseObject(s.substring(i, end + 1))?.let { out.add(it) }
-                i = end + 1
-            } else i++
+            when (val c = s[i]) {
+                '{' -> {
+                    val end = matchBrace(s, i)
+                    if (end < 0) break
+                    parseObject(s.substring(i, end + 1))?.let { out.add(it) }
+                    i = end + 1
+                }
+                '[' -> {
+                    // 嵌套数组：递归，结果本身作为一个元素
+                    val end = matchBracket(s, i)
+                    if (end < 0) break
+                    out.add(parseArray(s.substring(i, end + 1)))
+                    i = end + 1
+                }
+                '"' -> {
+                    val end = findStringEnd(s, i)
+                    if (end < 0) break
+                    out.add(unescape(s.substring(i + 1, end)))
+                    i = end + 1
+                }
+                ',', ' ', '\n', '\t', '\r', ']' -> i++
+                else -> {
+                    // 数字 / true / false / null：读到分隔符为止
+                    var j = i
+                    while (j < s.length && s[j] !in ",]") j++
+                    val raw = s.substring(i, j).trim()
+                    if (raw.isNotEmpty()) {
+                        out.add(
+                            raw.toIntOrNull() ?: raw.toDoubleOrNull()
+                            ?: raw.toBooleanStrictOrNull() ?: raw
+                        )
+                    }
+                    i = j
+                }
+            }
         }
         return out
     }

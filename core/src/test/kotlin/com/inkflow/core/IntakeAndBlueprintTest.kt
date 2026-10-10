@@ -4,6 +4,7 @@ import com.inkflow.core.agent.AgentPipeline
 import com.inkflow.core.corpus.Blueprint
 import com.inkflow.core.corpus.BlueprintStructure
 import com.inkflow.core.corpus.DepthProfile
+import com.inkflow.core.corpus.DepthSettingFields
 import com.inkflow.core.corpus.DepthResolver
 import com.inkflow.core.corpus.DepthTier
 import com.inkflow.core.corpus.IntakeQuestionnaire
@@ -680,5 +681,163 @@ class IntakeAndBlueprintTest {
         )
         assertTrue("AI 追问应被合并", result.output.any { it.field == "powerCeiling" })
         assertTrue("本地追问也应在", result.output.any { it.origin == "local" })
+    }
+
+    // ==================================================================
+    // 回归：线上反馈的两个 bug（v1.4.1）
+    // ==================================================================
+
+    /**
+     * Bug 1：AI 出的选择题「有题干、没有选项」。
+     *
+     * 根因：`options` 是字符串数组 `["A","B"]`，但解析走了只接受对象数组的
+     * `JsonLite.arrayOf`，`it as? Map` 全部判空 → options 为空 →
+     * UI 端 chunked(2) 得到空列表 → 一个控件都不渲染。
+     *
+     * 这个测试锁死解析路径。
+     */
+    @Test
+    fun aiChoiceQuestionKeepsItsOptions() = runTest {
+        val engine = object : AiEngine {
+            override val id = "ai"
+            override val displayName = "AI"
+            override val isOnDevice = true
+            override fun capabilities() = setOf(AiCapability.StructuredOutput)
+            override suspend fun isAvailable() = true
+            override suspend fun complete(request: AiRequest) = AiResponse(
+                """[{"field":"powerCeiling","question":"力量上限在哪？","why":"决定后期冲突规模",
+                     "kind":"choice","options":["单城之内","一界之内","多元宇宙"],"priority":2}]""",
+                id,
+            )
+            override fun stream(request: AiRequest): Flow<String> = flow { emit("[]") }
+        }
+
+        val q = AgentPipeline(engine).generateIntakeQuestions(
+            title = "测试", genre = "玄幻", logline = "主角叫陈默，与宗门对抗",
+            premise = "剑修分九境", targetWords = "1000000",
+        ).output.firstOrNull { it.field == "powerCeiling" }
+
+        assertNotNull("AI 追问应存在", q)
+        assertEquals("选项必须被解析出来，不能静默判空", 3, q!!.options.size)
+        assertTrue("选项内容应完整", q.options.contains("多元宇宙"))
+    }
+
+    @Test
+    fun choiceQuestionWithOptionsIsRenderable() {
+        // UI 用 chunked(2) 布局，选项非空才有控件可渲染
+        val q = com.inkflow.core.corpus.IntakeQuestion(
+            id = "t", field = "f", question = "测试", why = "测试用途",
+            kind = QuestionKind.Choice, options = listOf("A", "B", "C"),
+        )
+        assertTrue("有选项时 chunked 必须非空", q.options.chunked(2).isNotEmpty())
+    }
+
+    @Test
+    fun aiQuestionWithoutOptionsDoesNotCrash() = runTest {
+        // 模型偶尔会漏掉 options。此时应退化为文本题，而不是产出空数组让 UI 无控件可渲染。
+        val engine = object : AiEngine {
+            override val id = "ai"
+            override val displayName = "AI"
+            override val isOnDevice = true
+            override fun capabilities() = setOf(AiCapability.StructuredOutput)
+            override suspend fun isAvailable() = true
+            override suspend fun complete(request: AiRequest) = AiResponse(
+                """[{"field":"noOpt","question":"选一个方向？","why":"测试","kind":"choice","priority":2}]""",
+                id,
+            )
+            override fun stream(request: AiRequest): Flow<String> = flow { emit("[]") }
+        }
+        val q = AgentPipeline(engine).generateIntakeQuestions(
+            title = "测试", genre = "玄幻", logline = "主角叫陈默，与宗门对抗",
+            premise = "剑修分九境", targetWords = "1000000",
+        ).output.firstOrNull { it.field == "noOpt" }
+        assertNotNull(q)
+        assertTrue("缺选项时 options 为空数组而非崩溃", q!!.options.isEmpty())
+    }
+
+    @Test
+    fun stringArrayParsingHandlesMixedTypes() = runTest {
+        // 模型有时把选项写成单个字符串而非数组
+        val engine = object : AiEngine {
+            override val id = "ai"
+            override val displayName = "AI"
+            override val isOnDevice = true
+            override fun capabilities() = setOf(AiCapability.StructuredOutput)
+            override suspend fun isAvailable() = true
+            override suspend fun complete(request: AiRequest) = AiResponse(
+                """[{"field":"single","question":"测试？","why":"测试","kind":"choice","options":"唯一选项","priority":2}]""",
+                id,
+            )
+            override fun stream(request: AiRequest): Flow<String> = flow { emit("[]") }
+        }
+        val q = AgentPipeline(engine).generateIntakeQuestions(
+            title = "测试", genre = "玄幻", logline = "主角叫陈默，与宗门对抗",
+            premise = "剑修分九境", targetWords = "1000000",
+        ).output.firstOrNull { it.field == "single" }
+        assertNotNull(q)
+        assertEquals("字符串形式的单一选项也应被接受", listOf("唯一选项"), q!!.options)
+    }
+
+    @Test
+    fun objectArrayParsingStillWorksAfterScalarSupport() = runTest {
+        // 修 options 时改了 parseArray，必须确保对象数组解析没被破坏
+        val engine = object : AiEngine {
+            override val id = "ai"
+            override val displayName = "AI"
+            override val isOnDevice = true
+            override fun capabilities() = setOf(AiCapability.StructuredOutput)
+            override suspend fun isAvailable() = true
+            override suspend fun complete(request: AiRequest) = AiResponse(
+                """[{"severity":3,"type":"设定冲突","evidence":"原文片段","conflict":"与档案矛盾","fix":"改这里"}]""",
+                id,
+            )
+            override fun stream(request: AiRequest): Flow<String> = flow { emit("[]") }
+        }
+        val findings = AgentPipeline(engine).checkConsistency("档案", "正文").output
+        assertEquals("对象数组解析必须完好", 1, findings.size)
+        assertEquals(3, findings.first().severity)
+    }
+
+    @Test
+    fun nestedArrayInsideObjectParses() = runTest {
+        // options 是嵌套在对象里的字符串数组，同样依赖标量保留
+        val engine = object : AiEngine {
+            override val id = "ai"
+            override val displayName = "AI"
+            override val isOnDevice = true
+            override fun capabilities() = setOf(AiCapability.StructuredOutput)
+            override suspend fun isAvailable() = true
+            override suspend fun complete(request: AiRequest) = AiResponse(
+                """[{"field":"multi","question":"选几个？","why":"测试","kind":"multichoice",
+                     "options":["甲","乙","丙","丁"],"priority":2}]""",
+                id,
+            )
+            override fun stream(request: AiRequest): Flow<String> = flow { emit("[]") }
+        }
+        val q = AgentPipeline(engine).generateIntakeQuestions(
+            title = "测试", genre = "玄幻", logline = "主角叫陈默，与宗门对抗",
+            premise = "剑修分九境", targetWords = "1000000",
+        ).output.firstOrNull { it.field == "multi" }
+        assertNotNull(q)
+        assertEquals("四个选项都应保留", 4, q!!.options.size)
+        assertEquals(listOf("甲", "乙", "丙", "丁"), q.options)
+    }
+
+    /**
+     * Bug 2：写作深度设置点击无效果。
+     *
+     * 根因是 app 层的 [WritingPrefs] 漏了四个 depth 字段的读写映射，值被静默丢弃。
+     * app 模块的 unit test 在 aarch64 上跑不了（aapt2 只有 x86_64，见 ADR-7），
+     * 所以把「字段清单」这件事下沉到 core：这里校验清单本身，
+     * app 侧的 [PreferenceMapping] 实现由编译期的 override 强制绑定。
+     */
+    @Test
+    fun depthSettingFieldsContractIsWellFormed() {
+        val fields = DepthSettingFields.ALL
+        assertEquals("字段清单不应有重复", fields.size, fields.distinct().size)
+        assertTrue("字段清单不应有空白项", fields.all { it.isNotBlank() })
+        assertEquals("深度相关字段应为四个", 4, fields.size)
+        assertEquals("depthLevel", DepthSettingFields.LEVEL)
+        assertEquals("voiceProfileName", DepthSettingFields.VOICE)
     }
 }
